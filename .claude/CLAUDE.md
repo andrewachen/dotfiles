@@ -76,6 +76,62 @@ Rule #1: If you want exception to ANY rule, YOU MUST STOP and get explicit permi
 - YOU MUST commit frequently throughout the development process, even if your high-level tasks are not yet done. Commit your journal entries.
 - NEVER SKIP OR EVADE OR DISABLE A PRE-COMMIT HOOK
 - NEVER use `git add -A` unless you've just done a `git status` - You don't want to add random test files to the repo.
+- YOU MUST ALWAYS use an explicit refspec when pushing. NEVER `git push origin branchname` — ALWAYS `git push origin localref:refs/heads/remote-branch-name`. Worktree branches, tracking branches, and branch renames can cause implicit pushes to the wrong remote branch (e.g. main). An explicit refspec makes the destination unambiguous.
+
+## Code review
+
+Codex CLI (`codex review`) is available for independent code review by GPT-5.4.
+When Andrew asks for a "review" or "full review":
+  1. **Start Codex first** (in background — no permissions needed):
+     `codex review --commit HEAD` (or `--commit <sha>`)
+  2. **Then self-review** (while Codex runs): Review your own changes for
+     correctness, edge cases, and style
+  3. **Read Codex findings** when it completes
+
+Capture codex output to a file and extract only the findings.
+IMPORTANT: Do NOT use `$(...)` or backticks in the tee command — Claude Code
+flags command substitutions. Generate a unique filename yourself before
+writing the command (e.g., `review-a1b2c3d4.txt` using a random hex string):
+
+    codex review --commit HEAD 2>&1 | tee ~/.codex-reviews/review-UNIQUE.txt
+
+Then extract findings:
+
+    grep -A200 '^codex$' ~/.codex-reviews/review-UNIQUE.txt | tail -n +2
+
+Do NOT dump full codex output into context — it contains verbose exploration
+logs. The findings are after the last `^codex$` line.
+
+If `tee` fails because `~/.codex-reviews/` is missing, create it with
+`mkdir -p ~/.codex-reviews` and retry.
+
+### Choosing the right codex review mode
+
+Codex review has three modes. Pick based on what you need reviewed:
+
+- **Single commit**: `codex review --commit <sha>`
+- **Branch diff**: `codex review --base <branch>` (reviews all changes vs base)
+- **Uncommitted work**: `codex review --uncommitted` — reviews ALL uncommitted
+  changes. Codex may focus on whichever change it finds biggest and ignore
+  the rest. For a targeted review, commit or stash unrelated files first.
+  A worktree with a temp commit is ideal for reviewing a single file or plan.
+
+For multi-commit work, prefer `--base <branch>` — it reviews the full diff
+against the base branch in one pass. Do NOT pass multiple `--commit` flags
+or try to invent range syntax; `--commit` takes exactly one SHA.
+
+`--base` requires `git merge-base` to work, which fails on shallow clones.
+Check with `git rev-parse --is-shallow-repository`. If shallow, either:
+- Unshallow the repo: `git fetch --unshallow` (one-time, may be large)
+- Fall back to `--commit` on each commit individually
+
+Codex runs in a read-only sandbox and can only see files in the git working
+tree. To review non-committed files (plans, drafts), either use
+`--uncommitted` or make a temporary commit on a worktree branch so codex
+can access them.
+
+Some projects enforce codex review before push via hooks. If no hooks are
+configured, codex review is optional but available on request.
 
 ## Testing
 
@@ -141,4 +197,33 @@ YOU MUST follow this debugging framework for ANY technical issue:
 # Summary instructions
 
 When you are using /compact, please focus on our conversation, your most recent (and most significant) learnings, and what you need to do next. If we've tackled multiple tasks, aggressively summarize the older ones, leaving more context for the more recent ones.
+
+## Python Development
+
+- We use uv for Python package management
+- No requirements.txt needed
+- Run scripts with `uv run <script.py>`
+- Add packages with `uv add <package>`
+- Packages are stored in pyproject.toml
+
+## Java Development
+
+Follow these rules to avoid linter issues:
+
+- Never use wildcard imports
+- Do not use shaded imports without asking first (imports with "shade" or "shaded" in name)
+- When writing tests, avoid reflection for private methods. Make method package private, annotate with @VisibleForTesting, ensure test is in same package as class
+- For Collections in read-heavy patterns, bias toward Guava Immutable collections
+- When importing constants from inner class/enum, import the inner class to avoid `Outer.Inner.CONSTANT` (prefer `Inner.CONSTANT`)
+- For sufficiently descriptive constants, use static imports (e.g. `SomeClass.NUMBER_OF_COWS` gets static import). Avoid if creates ambiguity
+- Bias towards creating constants, especially if used multiple times in same class
+
+## Workflow
+
+- If there is a todo.md, check off completed work
+- Make sure testing always passes before task completion
+- Make sure linting passes before task completion
+- When producing .md files for Andrew to read, offer a copy-pastable command:
+  - `glow <path>` for terminal rendering
+  - `grip -b <path>` for browser rendering (GitHub-flavored markdown)
 
