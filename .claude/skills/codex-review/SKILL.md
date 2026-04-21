@@ -1,6 +1,6 @@
 ---
 name: Codex Review
-description: Run independent Codex CLI (GPT-5.4) code review in the background alongside your own self-review. Captures findings to a file and extracts only the verdict, keeping verbose exploration logs out of context.
+description: Get an independent Codex CLI (GPT-5.4) second opinion in the background while YOU do the primary self-review in parallel. Both reviews are required; Codex does not replace self-review. Captures the Codex transcript to a file and extracts only the verdict, keeping exploration logs out of context.
 when_to_use: When Andrew asks for a "review" or "full review" of a commit, branch, or uncommitted change. When you want an independent second opinion before declaring work done. Before pushing a PR, when project hooks don't already gate on codex.
 version: 2.0.0
 languages: all
@@ -10,9 +10,9 @@ languages: all
 
 ## Overview
 
-`codex review` is the Codex CLI's review mode — an independent reviewer backed by GPT-5.4, running in a read-only sandbox. Start it in the background, self-review your own changes while it runs, then read only the final verdict.
+`codex review` is the Codex CLI's review mode — an independent reviewer backed by GPT-5.4, running in a read-only sandbox. Start it in the background, do your own self-review in parallel, then merge both sets of findings into the report.
 
-**Core principle:** run Codex and self-review in parallel. Don't wait on Codex to start reviewing your own work.
+**Core principle:** Codex is a **second opinion**, not a replacement for your own review. You MUST self-review the same diff yourself. Run Codex and self-review in parallel so the two streams overlap — but both are required. A review that consists only of Codex's verdict is not a review.
 
 ## Workflow
 
@@ -28,13 +28,21 @@ codex-review-capture --commit HEAD
 
 Run this via Bash with `run_in_background: true`. Do it **before** you start self-reviewing so both streams overlap.
 
-### 2. Self-review while the wrapper runs
+**Invoke the wrapper bare — no shell redirections, no pipes, no `2>`/`>`/`|`.** The background task already captures stdout and stderr separately; adding `2>/tmp/whatever.log` or similar writes to a path outside the allowlist and trips a permission prompt. The allowlist entry is `Bash(codex-review-capture *)` — keep the command to just the wrapper and its flags.
 
-While Codex is analyzing, review your own diff for correctness, edge cases, style. Don't just wait — the point of starting Codex first is to overlap the work.
+### 2. Self-review while the wrapper runs — REQUIRED
 
-### 3. Read the verdict when the background task completes
+This step is not optional. While Codex is analyzing, you review the same diff: correctness, edge cases, error handling, tests, style, and anything specific to this codebase that Codex wouldn't know. Produce your own written findings.
 
-Read the background task's stdout directly — it contains only the verdict, no exploration trace. If you need the full transcript, the path is in the task's stderr (`codex-review-capture: full transcript -> ...`).
+Do NOT skip this and just wait on Codex. Do NOT treat Codex's output as "the review." Codex lacks the conversation context you have (what Andrew asked for, prior decisions, constraints discussed), hallucinates, and can miss codebase-specific issues. You cover what it misses; it covers what you miss.
+
+### 3. Merge findings and report
+
+When the background task completes, read its stdout — that's Codex's verdict only, no exploration trace. Then combine with your own findings and report **both**:
+- Your review (from step 2)
+- Codex's verdict, triaged per "What to do with findings" below
+
+If you need the full Codex transcript, the path is in the task's stderr (`codex-review-capture: full transcript -> ...`).
 
 ## Review modes
 
