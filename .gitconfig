@@ -2,8 +2,8 @@
 #	insteadOf = "https://github.com/"
 
 [filter "lfs"]
-	smudge = git-lfs smudge -- %f
-	process = git-lfs filter-process
+	smudge = git-lfs smudge --skip -- %f
+	process = git-lfs filter-process --skip
 	required = true
 	clean = git-lfs clean -- %f
 [user]
@@ -167,3 +167,5 @@
 [mergetool "sourcetree"]
 	cmd = /Applications/Sourcetree.app/Contents/Resources/opendiff-w.sh \"$LOCAL\" \"$REMOTE\" -ancestor \"$BASE\" -merge \"$MERGED\"
 	trustExitCode = true
+[coderabbit]
+	machineId = cli/60abdcb1e42347f4b3e64330412605d7
