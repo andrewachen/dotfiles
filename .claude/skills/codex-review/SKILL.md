@@ -2,7 +2,7 @@
 name: Codex Review
 description: Run independent Codex CLI (GPT-5.4) code review in the background alongside your own self-review. Captures findings to a file and extracts only the verdict, keeping verbose exploration logs out of context.
 when_to_use: When Andrew asks for a "review" or "full review" of a commit, branch, or uncommitted change. When you want an independent second opinion before declaring work done. Before pushing a PR, when project hooks don't already gate on codex.
-version: 1.0.0
+version: 2.0.0
 languages: all
 ---
 
@@ -10,65 +10,45 @@ languages: all
 
 ## Overview
 
-`codex review` is the Codex CLI's review mode — an independent reviewer backed by GPT-5.4, running in a read-only sandbox. Start it in the background, self-review your own changes while it runs, then read only the final findings.
+`codex review` is the Codex CLI's review mode — an independent reviewer backed by GPT-5.4, running in a read-only sandbox. Start it in the background, self-review your own changes while it runs, then read only the final verdict.
 
 **Core principle:** run Codex and self-review in parallel. Don't wait on Codex to start reviewing your own work.
 
 ## Workflow
 
-### 1. Start Codex in the background first
+Use the `codex-review-capture` wrapper (in `~/bin/`, installed from the dotfiles repo). It runs `codex review` with your args, captures the full transcript to a `/tmp/codex-review.*` file (owner-only, cleaned on reboot), and prints ONLY the verdict (content after the last `^codex$` marker) to stdout. The full transcript path is printed to stderr in case you need to dig into it.
 
-No permissions prompts are needed — Codex only reads the tree.
+### 1. Start the wrapper in the background
+
+Codex only reads the working tree, so no permission prompts are needed beyond the single `Bash(codex-review-capture *)` allowlist rule.
 
 ```bash
-codex review --commit HEAD   # or --commit <sha>
+codex-review-capture --commit HEAD
 ```
 
 Run this via Bash with `run_in_background: true`. Do it **before** you start self-reviewing so both streams overlap.
 
-### 2. Self-review while Codex runs
+### 2. Self-review while the wrapper runs
 
 While Codex is analyzing, review your own diff for correctness, edge cases, style. Don't just wait — the point of starting Codex first is to overlap the work.
 
-### 3. Read findings when Codex completes
+### 3. Read the verdict when the background task completes
 
-Capture the output to a file and extract only the findings block. **Do NOT** dump full Codex output into context — it contains verbose exploration logs.
-
-**IMPORTANT:** Claude Code's Bash input filter blocks `$(...)` and backticks. Generate a unique filename yourself (e.g., `review-a1b2c3d4.txt` using a random hex string) before building the `tee` command; do not let the shell compute it via command substitution.
-
-```bash
-codex review --commit HEAD 2>&1 | tee ~/.codex-reviews/review-UNIQUE.txt
-```
-
-Then extract the findings:
-
-```bash
-grep -A200 '^codex$' ~/.codex-reviews/review-UNIQUE.txt | tail -n +2
-```
-
-The findings live after the last `^codex$` line. The earlier lines are the model's exploration trace — not useful in context.
-
-If `tee` fails because `~/.codex-reviews/` does not exist, create it once:
-
-```bash
-mkdir -p ~/.codex-reviews
-```
-
-and retry.
+Read the background task's stdout directly — it contains only the verdict, no exploration trace. If you need the full transcript, the path is in the task's stderr (`codex-review-capture: full transcript -> ...`).
 
 ## Review modes
 
-Codex review has three modes. Pick based on what you need reviewed:
+Pass whatever flags you would pass to `codex review` directly. The wrapper forwards `"$@"` verbatim.
 
 ### Single commit
 ```bash
-codex review --commit <sha>
+codex-review-capture --commit <sha>
 ```
 Reviews exactly that one commit's diff against its parent.
 
 ### Branch diff
 ```bash
-codex review --base <branch>
+codex-review-capture --base <branch>
 ```
 Reviews ALL changes on the current branch vs. the base branch, in one pass. Prefer this for multi-commit work — do NOT pass multiple `--commit` flags or invent range syntax. `--commit` takes exactly one SHA.
 
@@ -82,7 +62,7 @@ If shallow, either unshallow once (`git fetch --unshallow`, potentially large) o
 
 ### Uncommitted work
 ```bash
-codex review --uncommitted
+codex-review-capture --uncommitted
 ```
 Reviews ALL uncommitted changes. Codex may fixate on whichever change it finds biggest and skim the rest.
 

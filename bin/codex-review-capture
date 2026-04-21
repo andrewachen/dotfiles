@@ -1,0 +1,25 @@
+#!/bin/bash
+# ABOUTME: Wrapper around `codex review` that captures the full transcript to
+# ABOUTME: a /tmp file (owner-only, auto-cleaned on reboot) and prints only the
+# ABOUTME: verdict -- content after the last `^codex$` marker -- to stdout. Lets
+# ABOUTME: Claude Code run codex review with a single permission rule.
+
+set -uo pipefail
+
+output=$(mktemp -t codex-review.XXXXXXXX)
+
+printf 'codex-review-capture: full transcript -> %s\n' "$output" >&2
+
+codex review "$@" >"$output" 2>&1
+rc=$?
+
+if grep -q '^codex$' "$output"; then
+    # Keep only the block after the LAST `^codex$` marker: reset buffer on each
+    # match, then print whatever remains at EOF.
+    awk '/^codex$/ { buf = ""; next } { buf = buf $0 ORS } END { printf "%s", buf }' "$output"
+else
+    printf 'codex-review-capture: no ^codex$ marker in output; printing full transcript.\n' >&2
+    cat "$output"
+fi
+
+exit "$rc"

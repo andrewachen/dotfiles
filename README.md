@@ -30,3 +30,18 @@ done
 ```
 
 This coexists with the Superpowers plugin skills and any other skill dirs under `~/.claude/skills/`.
+
+### Helper scripts: symlink from ~/bin
+
+Scripts under `bin/` are meant to live on `PATH` via `~/bin/`:
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+mkdir -p ~/bin
+
+for b in bin/*; do
+  ln -sf "$PWD/$b" "$HOME/bin/$(basename "$b")"
+done
+```
+
+- `codex-review-capture` — wrapper around `codex review` used by the `codex-review` skill. Captures the full transcript to `/tmp/codex-review.*` (owner-only, cleaned on reboot) and prints only the verdict (content after the last `^codex$` marker) to stdout.
