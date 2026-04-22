@@ -1,5 +1,5 @@
 ---
-name: Java Style
+name: java-style
 description: Andrew's personal Java and Kotlin style rules — linter hygiene, Guava/Apache Commons bias, test access patterns, constant and import conventions. Complementary to (not overlapping with) the Netflix-generic java-context skill.
 when_to_use: When writing, editing, or reviewing Java or Kotlin source files. When deciding between Guava/Apache Commons vs. hand-rolled helpers. When adding a test that needs access to a private method. When importing a constant from an inner class or enum.
 version: 1.0.0
