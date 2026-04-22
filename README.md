@@ -4,15 +4,17 @@ Andrew's dotfiles, forked from [obra/dotfiles](https://github.com/obra/dotfiles)
 
 ## Claude Code install
 
-### Recommended skills: install the Superpowers plugin
+### Required: install the Superpowers plugin
 
-Most of the skills referenced by `.claude/CLAUDE.md` (test-driven-development, systematic-debugging, writing-plans, brainstorming, verification-before-completion, etc.) come from the [`obra/superpowers`](https://github.com/obra/superpowers) plugin. Install it from the official marketplace:
+The [`obra/superpowers`](https://github.com/obra/superpowers) plugin is a hard dependency of this config, not a recommendation. `CLAUDE.md` and the personal skills in this repo assume its skills are loaded — test-driven-development, systematic-debugging, writing-plans, brainstorming, verification-before-completion, and others are referenced directly. Without it, the workflow breaks.
+
+Install it from the official marketplace before anything else:
 
 ```
 /plugin install superpowers@claude-plugins-official
 ```
 
-This is the actively maintained version (v5.0.7+). Skills evolve there faster than in any fork.
+Use the actively maintained version (v5.0.7+). Skills evolve there faster than in any fork.
 
 ### Personal skills + CLAUDE.md: symlink from this repo
 
