@@ -91,6 +91,12 @@ YOU MUST write comments explaining WHAT and WHY, never temporal context or what 
 - YOU MUST NEVER ignore system or test output - logs and messages often contain CRITICAL information.
 - Test output MUST BE PRISTINE TO PASS. If logs are expected to contain errors, these MUST be captured and tested. If a test is intentionally triggering an error, we *must* capture and validate that the error output is as we expect
 
+## Code review
+
+When a superpowers review fires — per-task quality review in `superpowers:subagent-driven-development`, any `superpowers:requesting-code-review` invocation, and the final post-implementation review — ALSO invoke the `codex-review` skill in parallel. The superpowers reviewer is an Anthropic subagent; `codex-review` is a GPT-5.4 second opinion via the Codex CLI. Two independent model reads on the same diff catch different classes of issues.
+
+Dispatch both in a single message so they run concurrently — wall-clock stays flat, only token cost stacks. If Andrew says "skip codex" or "final only" in a session, honor it for the rest of that session without re-asking.
+
 ## Trivial work
 
 IMPORTANT: Never skip process steps regardless of perceived task complexity.
