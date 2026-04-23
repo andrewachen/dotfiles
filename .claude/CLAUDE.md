@@ -79,6 +79,7 @@ YOU MUST write comments explaining WHAT and WHY, never temporal context or what 
 - NEVER SKIP, EVADE OR DISABLE A PRE-COMMIT HOOK
 - NEVER use `git add -A` unless you've just done a `git status` - Don't add random test files to the repo.
 - YOU MUST ALWAYS use an explicit refspec when pushing. NEVER `git push origin branchname` — ALWAYS `git push origin localref:refs/heads/remote-branch-name`. Worktree branches, tracking branches, and branch renames can cause implicit pushes to the wrong remote branch (e.g. main). An explicit refspec makes the destination unambiguous.
+- NEVER use `git -C <path>` when already in the correct working directory. Only use `-C` when the target directory genuinely differs from the current working directory. Unnecessary `-C` triggers a sandbox approval prompt for no reason.
 
 ## Testing
 
