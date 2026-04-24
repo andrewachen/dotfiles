@@ -1,6 +1,6 @@
 ---
 name: codex-review
-description: Get an independent Codex CLI (GPT-5.4) second opinion in the background while YOU do the primary self-review in parallel. Both reviews are required; Codex does not replace self-review. Captures the Codex transcript to a file and extracts only the verdict, keeping exploration logs out of context.
+description: Get an independent Codex CLI (GPT-5.5) second opinion in the background while YOU do the primary self-review in parallel. Both reviews are required; Codex does not replace self-review. Captures the Codex transcript to a file and extracts only the verdict, keeping exploration logs out of context.
 when_to_use: When Andrew asks for a "review" or "full review" of a commit, branch, or uncommitted change. When you want an independent second opinion before declaring work done. Before pushing a PR, when project hooks don't already gate on codex.
 version: 2.0.0
 languages: all
