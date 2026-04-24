@@ -125,6 +125,7 @@ For complete methodology, see the systematic-debugging skill
 ## Personal preferences
 
 - Prefer `uv` for Python package management: `uv run <script>` to execute, `uv add <pkg>` to install; no `requirements.txt`.
+- Prefer `rg` (ripgrep) over `grep -r` for recursive code search — faster and respects `.gitignore`.
 - All new code files start with two lines beginning `ABOUTME: ` so they're easily greppable.
 - NEVER remove code comments unless you can PROVE they are actively false.
 - NEVER make code changes unrelated to the current task. Document follow-ups in the journal rather than fixing them inline.
