@@ -10,7 +10,7 @@ languages: all
 
 ## Overview
 
-`codex review` is the Codex CLI's review mode — an independent reviewer backed by GPT-5.4, running in a read-only sandbox. Start it in the background, do your own self-review in parallel, then merge both sets of findings into the report.
+`codex review` is the Codex CLI's review mode — an independent reviewer backed by GPT-5.5, running in a read-only sandbox. Start it in the background, do your own self-review in parallel, then merge both sets of findings into the report.
 
 **Core principle:** Codex is a **second opinion**, not a replacement for your own review. You MUST self-review the same diff yourself. Run Codex and self-review in parallel so the two streams overlap — but both are required. A review that consists only of Codex's verdict is not a review.
 
