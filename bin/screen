@@ -1,0 +1,270 @@
+#!/bin/bash
+# ABOUTME: Compatibility wrapper that maps common GNU screen invocations to tmux.
+# ABOUTME: It intentionally does not fall back to real screen for unsupported args.
+
+set -uo pipefail
+
+tmux_bin=${TMUX_SCREEN_COMPAT_TMUX:-tmux}
+
+session_name=
+target=
+list_sessions=false
+attach_requested=false
+create_if_missing=false
+detach_requested=false
+detach_others=false
+force_new=false
+unsupported=()
+positionals=()
+cluster_needs_session_name=false
+
+usage() {
+    cat <<'EOF'
+screen: tmux-backed screen compatibility wrapper
+
+Supported:
+  screen
+  screen -S NAME [COMMAND ...]
+  screen -r [NAME]
+  screen -x [NAME]
+  screen -d [NAME]
+  screen -D [NAME]
+  screen -d -r [NAME]
+  screen -D -r [NAME]
+  screen -D -RR [NAME]
+  screen -R|-RR [NAME]
+  screen -ls|-list|-l
+  screen -dmS NAME [COMMAND ...]
+
+In this wrapper, -D detaches other tmux clients without sending SIGHUP/logout.
+Unsupported screen options do not fall back to GNU screen.
+Use tmux directly for behavior outside this compatibility set.
+EOF
+}
+
+die() {
+    printf 'screen: %s\n' "$*" >&2
+    printf 'screen: this is a tmux-backed screen compatibility wrapper; unsupported screen args do not fall back to GNU screen.\n' >&2
+    printf 'screen: run "screen --help" for supported compatibility flags.\n' >&2
+    exit 2
+}
+
+need_value() {
+    local opt=$1
+    if (($# < 2)) || [[ -z ${2-} ]]; then
+        die "$opt requires an argument"
+    fi
+}
+
+require_tmux() {
+    if ! command -v "$tmux_bin" >/dev/null 2>&1; then
+        printf 'screen: tmux is required for this compatibility wrapper, but "%s" was not found.\n' "$tmux_bin" >&2
+        exit 127
+    fi
+}
+
+run_tmux() {
+    require_tmux
+    exec "$tmux_bin" "$@"
+}
+
+join_command() {
+    local out=
+    local quoted=
+    local word=
+
+    for word in "$@"; do
+        printf -v quoted '%q' "$word"
+        if [[ -n $out ]]; then
+            out+=" "
+        fi
+        out+="$quoted"
+    done
+
+    printf '%s' "$out"
+}
+
+parse_cluster() {
+    local arg=$1
+    local chars=${arg#-}
+    local ch
+
+    while [[ -n $chars ]]; do
+        ch=${chars:0:1}
+        chars=${chars:1}
+
+        case "$ch" in
+            d)
+                detach_requested=true
+                ;;
+            D)
+                detach_requested=true
+                detach_others=true
+                ;;
+            m)
+                force_new=true
+                ;;
+            r|x)
+                attach_requested=true
+                if [[ -n $chars ]]; then
+                    target=$chars
+                    chars=
+                fi
+                ;;
+            R)
+                attach_requested=true
+                create_if_missing=true
+                ;;
+            S)
+                if [[ -n $chars ]]; then
+                    session_name=$chars
+                    chars=
+                else
+                    cluster_needs_session_name=true
+                fi
+                ;;
+            *)
+                unsupported+=("-$ch")
+                ;;
+        esac
+    done
+}
+
+while (($#)); do
+    case "$1" in
+        --)
+            shift
+            positionals+=("$@")
+            break
+            ;;
+        -h|--help|-help)
+            usage
+            exit 0
+            ;;
+        -ls|-list|--list|-l)
+            list_sessions=true
+            shift
+            ;;
+        -S)
+            shift
+            need_value "-S" "${1-}"
+            session_name=$1
+            shift
+            ;;
+        -S*)
+            session_name=${1#-S}
+            shift
+            ;;
+        -*)
+            arg=$1
+            shift
+            cluster_needs_session_name=false
+            parse_cluster "$arg"
+            if [[ $cluster_needs_session_name == true ]]; then
+                need_value "-S" "${1-}"
+                session_name=$1
+                shift
+            fi
+            ;;
+        *)
+            positionals+=("$@")
+            break
+            ;;
+    esac
+done
+
+if ((${#unsupported[@]})); then
+    die "unsupported option(s): ${unsupported[*]}"
+fi
+
+if [[ $list_sessions == true ]]; then
+    if [[ -n $session_name || $attach_requested == true || $detach_requested == true || $force_new == true || ${#positionals[@]} -gt 0 ]]; then
+        die "session listing cannot be combined with other screen options"
+    fi
+    run_tmux list-sessions
+fi
+
+if [[ $attach_requested == true ]]; then
+    if [[ -z $target && ${#positionals[@]} -gt 0 ]]; then
+        target=${positionals[0]}
+        positionals=("${positionals[@]:1}")
+    fi
+
+    if ((${#positionals[@]})); then
+        die "attach mode accepts at most one session name"
+    fi
+
+    if [[ -z $target && -n $session_name ]]; then
+        target=$session_name
+    fi
+
+    if [[ $create_if_missing == true ]]; then
+        if [[ -n $target ]]; then
+            args=(new-session -A -s "$target")
+            if [[ $detach_requested == true || $detach_others == true ]]; then
+                args=(new-session -A -D -s "$target")
+            fi
+            run_tmux "${args[@]}"
+        fi
+
+        require_tmux
+        args=(attach-session)
+        if [[ $detach_requested == true || $detach_others == true ]]; then
+            args+=( -d )
+        fi
+
+        if "$tmux_bin" list-sessions >/dev/null 2>&1; then
+            run_tmux "${args[@]}"
+        fi
+
+        run_tmux new-session
+    fi
+
+    args=(attach-session)
+    if [[ $detach_requested == true || $detach_others == true ]]; then
+        args+=( -d )
+    fi
+    if [[ -n $target ]]; then
+        args+=( -t "$target" )
+    fi
+
+    run_tmux "${args[@]}"
+fi
+
+if [[ $detach_requested == true && $force_new == false ]]; then
+    if [[ -z $target && ${#positionals[@]} -gt 0 ]]; then
+        target=${positionals[0]}
+        positionals=("${positionals[@]:1}")
+    fi
+
+    if ((${#positionals[@]})); then
+        die "detach mode accepts at most one session name"
+    fi
+
+    if [[ -z $target && -n $session_name ]]; then
+        target=$session_name
+    fi
+
+    args=(detach-client)
+    if [[ -n $target ]]; then
+        args+=( -s "$target" )
+    fi
+
+    run_tmux "${args[@]}"
+fi
+
+args=(new-session)
+
+if [[ $detach_requested == true && $force_new == true ]]; then
+    args+=( -d )
+fi
+
+if [[ -n $session_name ]]; then
+    args+=( -s "$session_name" )
+fi
+
+if ((${#positionals[@]})); then
+    args+=( "$(join_command "${positionals[@]}")" )
+fi
+
+run_tmux "${args[@]}"
