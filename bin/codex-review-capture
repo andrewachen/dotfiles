@@ -1,17 +1,96 @@
 #!/bin/bash
 # ABOUTME: Wrapper around `codex review` that captures the full transcript to
 # ABOUTME: a /tmp file (owner-only, auto-cleaned on reboot) and prints only the
-# ABOUTME: verdict -- content after the last `^codex$` marker -- to stdout. Lets
-# ABOUTME: Claude Code run codex review with a single permission rule.
+# ABOUTME: verdict -- content after the last `^codex$` marker -- to stdout.
+# ABOUTME: After a successful review with a recognized mode flag, also writes
+# ABOUTME: a staged file that codex-gate-pass.sh promotes into a session-keyed
+# ABOUTME: sentinel for codex-gate.sh.
 
 set -uo pipefail
 
-output=$(mktemp -t codex-review.XXXXXXXX)
+if command -v sha256sum >/dev/null 2>&1; then
+    _sha256() { sha256sum | cut -d' ' -f1; }
+elif command -v shasum >/dev/null 2>&1; then
+    _sha256() { shasum -a 256 | cut -d' ' -f1; }
+else
+    _sha256() { return 1; }
+fi
 
+# Detect codex review mode and capture (BASE, HASH) for exactly the diff codex
+# will see. We do this BEFORE running codex so a long-running review's race
+# against working-tree edits doesn't change what we record.
+review_mode=""
+review_arg=""
+argv=("$@")
+# `codex review` (clap parser) accepts both `--flag value` and `--flag=value`
+# forms. We handle both. Last flag wins on conflict.
+for ((i=0; i<${#argv[@]}; i++)); do
+    case "${argv[i]}" in
+        --commit)      review_mode="commit";      review_arg="${argv[i+1]:-}" ;;
+        --commit=*)    review_mode="commit";      review_arg="${argv[i]#--commit=}" ;;
+        --base)        review_mode="base";        review_arg="${argv[i+1]:-}" ;;
+        --base=*)      review_mode="base";        review_arg="${argv[i]#--base=}" ;;
+        --uncommitted) review_mode="uncommitted"; review_arg="" ;;
+    esac
+done
+
+review_base=""
+review_hash=""
+repo_name=""
+if topdir=$(git rev-parse --show-toplevel 2>/dev/null); then
+    repo_name=$(basename "$topdir")
+    case "$review_mode" in
+        commit)
+            if [[ -n "$review_arg" ]] && review_base=$(git rev-parse "${review_arg}^" 2>/dev/null); then
+                review_hash=$(git diff "${review_arg}^" "${review_arg}" 2>/dev/null | _sha256) || review_hash=""
+            fi
+            ;;
+        base)
+            if [[ -n "$review_arg" ]] && review_base=$(git merge-base "$review_arg" HEAD 2>/dev/null); then
+                review_hash=$(git diff "$review_base" HEAD 2>/dev/null | _sha256) || review_hash=""
+            fi
+            ;;
+        uncommitted)
+            if review_base=$(git rev-parse HEAD 2>/dev/null); then
+                # `codex review --uncommitted` covers staged, unstaged, AND
+                # untracked changes. `git diff HEAD` only sees staged + unstaged,
+                # so an untracked-only review would record an empty-diff hash and
+                # the gate would over-block once those files are committed. Fail
+                # closed: if untracked files are present, refuse to write the
+                # staged file. The user must `git add` them first.
+                # `git ls-files --others` is cwd-scoped without explicit paths,
+                # so we use `-C "$topdir"` to scan the whole repo regardless of
+                # where the wrapper was invoked.
+                untracked=$(git -C "$topdir" ls-files --others --exclude-standard 2>/dev/null)
+                if [[ -n "$untracked" ]]; then
+                    printf 'codex-review-capture: --uncommitted review includes untracked files,\n' >&2
+                    printf 'but the gate cannot verify them. Stage them with `git add` first,\n' >&2
+                    printf 'then re-run codex-review-capture.\n\nUntracked:\n%s\n' "$untracked" >&2
+                    review_base=""
+                else
+                    review_hash=$(git diff HEAD 2>/dev/null | _sha256) || review_hash=""
+                fi
+            fi
+            ;;
+    esac
+fi
+
+staged=""
+if [[ -n "$review_base" && -n "$review_hash" && -n "$repo_name" ]]; then
+    staged="/tmp/codex-gate-staged-${UID}-${repo_name}-$$"
+    printf '%s\n%s\n' "$review_base" "$review_hash" > "$staged"
+    printf 'codex-review-capture: staged=%s\n' "$staged" >&2
+fi
+
+output=$(mktemp -t codex-review.XXXXXXXX)
 printf 'codex-review-capture: full transcript -> %s\n' "$output" >&2
 
 codex review "$@" >"$output" 2>&1
 rc=$?
+
+if [[ $rc -ne 0 && -n "$staged" ]]; then
+    rm -f "$staged"
+fi
 
 if grep -q '^codex$' "$output"; then
     # Keep only the block after the LAST `^codex$` marker: reset buffer on each

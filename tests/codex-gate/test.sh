@@ -126,7 +126,10 @@ test_wrapper_base_mode_uses_merge_base() {
 
 test_wrapper_removes_staged_on_codex_failure() {
   setup_repo
+  # Stage the file so there are no untracked files; the fail-closed untracked
+  # guard must not fire — this test exercises the codex-exit-code cleanup path.
   echo "x" > x.txt
+  git add x.txt
   stderr=$(FAKE_CODEX_RC=42 "$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null) || true
   staged=$(echo "$stderr" | grep -oE 'staged=[^[:space:]]+' | head -n1 | cut -d= -f2-)
   if [[ -n "$staged" ]]; then
@@ -143,6 +146,78 @@ test_wrapper_skips_staged_for_unknown_mode() {
   stderr=$("$DOTFILES/bin/codex-review-capture" 2>&1 >/dev/null)
   staged_line=$(echo "$stderr" | grep -E 'staged=' || true)
   assert_eq "$staged_line" "" "no staged file written when no mode flag"
+  teardown_repo
+}
+
+test_wrapper_uncommitted_with_untracked_fails_closed() {
+  setup_repo
+  echo "baseline" > foo.txt
+  git add foo.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
+  echo "untracked_content" > new.txt
+  stderr=$("$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  staged_line=$(echo "$stderr" | grep -E '^codex-review-capture: staged=' || true)
+  assert_eq "$staged_line" "" "no staged file when untracked files present"
+  if echo "$stderr" | grep -q 'untracked files'; then
+    printf '  ok stderr explains the untracked-files reason\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL stderr does not mention untracked files\n'
+    FAILED=$((FAILED+1))
+  fi
+  teardown_repo
+}
+
+test_wrapper_accepts_equals_form_commit_flag() {
+  setup_repo
+  echo "first" > a.txt
+  git add a.txt && git -c user.email=t@t -c user.name=t commit -q -m "add a"
+  COMMIT=$(git rev-parse HEAD)
+  stderr=$("$DOTFILES/bin/codex-review-capture" "--commit=$COMMIT" 2>&1 >/dev/null)
+  staged=$(echo "$stderr" | grep -oE 'staged=[^[:space:]]+' | head -n1 | cut -d= -f2-)
+  assert_file_exists "$staged"
+  if [[ -f "$staged" ]]; then
+    base=$(sed -n 1p "$staged")
+    expected_base=$(git rev-parse "$COMMIT^")
+    assert_eq "$base" "$expected_base" "equals-form --commit= parsed correctly"
+  fi
+  teardown_repo
+}
+
+test_wrapper_uncommitted_detects_untracked_from_subdir() {
+  setup_repo
+  echo "baseline" > foo.txt
+  git add foo.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
+  mkdir sub
+  echo "sneaky" > sneaky.txt   # untracked, in repo root
+  cd sub
+  stderr=$("$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  staged_line=$(echo "$stderr" | grep -E '^codex-review-capture: staged=' || true)
+  assert_eq "$staged_line" "" "no staged file when untracked exist outside cwd"
+  if echo "$stderr" | grep -q 'sneaky.txt'; then
+    printf '  ok stderr names the untracked file\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL stderr does not name sneaky.txt\n'
+    FAILED=$((FAILED+1))
+  fi
+  teardown_repo
+}
+
+test_wrapper_accepts_equals_form_base_flag() {
+  setup_repo
+  echo "main_change" > m.txt
+  git add m.txt && git -c user.email=t@t -c user.name=t commit -q -m "main"
+  git checkout -q -b feature
+  echo "feat_change" > f.txt
+  git add f.txt && git -c user.email=t@t -c user.name=t commit -q -m "feat"
+  stderr=$("$DOTFILES/bin/codex-review-capture" "--base=main" 2>&1 >/dev/null)
+  staged=$(echo "$stderr" | grep -oE 'staged=[^[:space:]]+' | head -n1 | cut -d= -f2-)
+  assert_file_exists "$staged"
+  if [[ -f "$staged" ]]; then
+    base=$(sed -n 1p "$staged")
+    expected_base=$(git merge-base main HEAD)
+    assert_eq "$base" "$expected_base" "equals-form --base= uses merge-base"
+  fi
   teardown_repo
 }
 
