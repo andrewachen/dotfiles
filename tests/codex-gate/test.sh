@@ -246,6 +246,18 @@ test_pass_hook_noops_without_staged_line() {
   teardown_repo
 }
 
+test_pass_hook_exits_zero_when_no_staged_marker() {
+  setup_repo
+  input=$(printf '{"session_id":"sess3","cwd":"%s","tool_response":{"stderr":"bare codex output without marker"}}' "$REPO")
+  set +e
+  echo "$input" | bash "$DOTFILES/.claude/hooks/codex-gate-pass.sh"
+  rc=$?
+  set -e
+  assert_eq "$rc" "0" "pass-hook exits 0 when stderr has no staged= marker"
+  assert_no_file "/tmp/codex-gate-sess3-${REPO_NAME}"
+  teardown_repo
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t
