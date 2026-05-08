@@ -80,6 +80,7 @@ YOU MUST write comments explaining WHAT and WHY, never temporal context or what 
 - NEVER use `git add -A` unless you've just done a `git status` - Don't add random test files to the repo.
 - YOU MUST ALWAYS use an explicit refspec when pushing. NEVER `git push origin branchname` — ALWAYS `git push origin localref:refs/heads/remote-branch-name`. Worktree branches, tracking branches, and branch renames can cause implicit pushes to the wrong remote branch (e.g. main). An explicit refspec makes the destination unambiguous.
 - NEVER use `git -C <path>` when cwd is already in the target repo — it triggers an unnecessary sandbox approval prompt. Use `-C <path>` ONLY when cwd is genuinely not the target (e.g., running git on a different repo from a worktree or investigation detour). Same anti-pattern: `cd <path> && git ...` when already in `<path>`.
+- NEVER prepend `-c color.ui=never` (or similar `-c` color overrides) to git commands. Git already disables color when stdout isn't a TTY, which is always the case from Bash tool calls — the flag is redundant. Worse, it defeats Claude Code's permission auto-allow for read-only subcommands (`git grep`, `git show`, `git log`, `git diff`, etc.), turning silent commands into permission prompts.
 
 ## Testing
 
