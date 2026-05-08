@@ -61,6 +61,15 @@ DENY_CASES = [
     # redundancy.
     ("git --work-tree=sub --git-dir=cwd/.git",
                                       f"git --work-tree={CWD}/.claude/worktrees/x --git-dir={CWD}/.git diff"),
+    # In-tree subdirs: -C/--git-dir/--work-tree to a path inside cwd defeats
+    # the auto-allow matcher and forces a permission prompt even though the
+    # path is genuinely a different directory. Hook denies with a cd /
+    # EnterWorktree hint.
+    ("git -C subdir-of-cwd",          f"git -C {CWD}/.claude log --oneline"),
+    ("git -C worktree-subpath",       f"git -C {CWD}/.claude/worktrees/codex-gate-redesign log"),
+    ("git --git-dir=subpath/.git",    f"git --git-dir={CWD}/.claude/worktrees/codex-gate-redesign/.git status"),
+    ("git --work-tree=subpath",       f"git --work-tree={CWD}/.claude/worktrees/codex-gate-redesign diff"),
+    ("git --git-dir subpath/.git",    f"git --git-dir {CWD}/.claude/worktrees/codex-gate-redesign/.git status"),
     ("cd cwd && git",                 f"cd {CWD} && git status"),
     ("cd cwd ; git",                  f"cd {CWD} ; git status"),
     ('cd "$PWD" && git',              'cd "$PWD" && git status'),
@@ -78,6 +87,10 @@ ALLOW_CASES = [
     # cwd. Hook must not generate a misleading "points at cwd" deny for it.
     ("git --git-dir= status",         "git --git-dir= status"),
     ("git --work-tree= status",       "git --work-tree= status"),
+    # cd to a subdir of cwd is genuine navigation, not a redundant relocation.
+    # Hook only blocks `cd <cwd> && git ...`, not `cd <subdir> && git ...`.
+    ("cd subdir && git",              f"cd {CWD}/.claude && git status"),
+    ("cd worktree-subpath && git",    f"cd {CWD}/.claude/worktrees/codex-gate-redesign && git diff"),
 ]
 
 

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-# ABOUTME: PreToolUse Bash hook that denies redundant repo relocation -- `git -C <cwd>`,
-# ABOUTME: `git --git-dir <cwd>/.git`, `git --work-tree <cwd>`, and `cd <cwd> && git ...` --
-# ABOUTME: where the path resolves to the current working directory. These trigger
-# ABOUTME: unnecessary sandbox approval prompts. Returns permissionDecision=deny with a
-# ABOUTME: reason so Claude retries without the relocation.
+# ABOUTME: PreToolUse Bash hook that denies wasteful repo relocation. Blocks
+# ABOUTME: `git -C/--git-dir/--work-tree <path>` whenever <path> resolves into
+# ABOUTME: the current working directory's tree (cwd, cwd/.git, or any subdir),
+# ABOUTME: and blocks `cd <cwd> && git ...` exact-match. Both patterns force
+# ABOUTME: permission prompts (the auto-allow matcher for read-only git
+# ABOUTME: subcommands does not match `-C`-prefixed forms). Returns
+# ABOUTME: permissionDecision=deny with a reason so Claude reroutes through
+# ABOUTME: cd / EnterWorktree / parent dispatch instead.
 
 import json
 import os
@@ -30,22 +33,34 @@ def deny(reason: str) -> None:
     sys.exit(0)
 
 
-def is_redundant(path: str, cwd: str) -> bool:
+def classify_location(path: str, cwd: str) -> str | None:
+    """Return 'cwd', 'subdir', or None.
+
+    'cwd':    path resolves to cwd or cwd/.git -- truly redundant relocation.
+    'subdir': path resolves to a directory inside cwd -- reachable from cwd
+              via plain cd or EnterWorktree without -C / --git-dir / --work-tree.
+    None:     path is outside cwd's tree (likely a genuinely different repo).
+    """
     try:
         expanded = os.path.realpath(os.path.expandvars(os.path.expanduser(path)))
     except (OSError, ValueError):
-        return False
-    return expanded == cwd or expanded == os.path.join(cwd, ".git")
+        return None
+    if expanded == cwd or expanded == os.path.join(cwd, ".git"):
+        return "cwd"
+    if expanded.startswith(cwd + os.sep):
+        return "subdir"
+    return None
 
 
-def find_redundant_git_relocation(
+def find_in_tree_git_relocation(
     tokens: list[str], cwd: str
-) -> tuple[str, str] | None:
-    """Return (rendered_flag, path) for the first redundant location flag found.
+) -> tuple[str, str, str] | None:
+    """Return (rendered_flag, path, kind) for the first in-tree location flag.
 
     rendered_flag is the user-facing form to quote in the deny message:
     `-C`, `--git-dir`, or `--work-tree` for space-separated args, or
     `--git-dir=` / `--work-tree=` (trailing `=`) for equal-form args.
+    kind is the classify_location() result: 'cwd' or 'subdir'.
     """
     for i, tok in enumerate(tokens):
         if tok != "git":
@@ -54,13 +69,15 @@ def find_redundant_git_relocation(
         while j < len(tokens):
             t = tokens[j]
             if t in GIT_LOCATION_FLAGS and j + 1 < len(tokens):
-                if is_redundant(tokens[j + 1], cwd):
-                    return t, tokens[j + 1]
+                kind = classify_location(tokens[j + 1], cwd)
+                if kind is not None:
+                    return t, tokens[j + 1], kind
                 j += 2
             elif t.startswith(GIT_LOCATION_EQ_PREFIXES):
                 flag, _, path = t.partition("=")
-                if path and is_redundant(path, cwd):
-                    return f"{flag}=", path
+                kind = classify_location(path, cwd) if path else None
+                if kind is not None:
+                    return f"{flag}=", path, kind
                 j += 1
             elif t == "-c" and j + 1 < len(tokens):
                 j += 2
@@ -72,12 +89,13 @@ def find_redundant_git_relocation(
 
 
 def find_redundant_cd_git(tokens: list[str], cwd: str) -> str | None:
+    """Block only exact-cwd `cd <cwd> && git ...`. cd to a subdir is genuine."""
     for i in range(len(tokens) - 3):
         if (
             tokens[i] == "cd"
             and tokens[i + 2] in SEPARATORS
             and tokens[i + 3] == "git"
-            and is_redundant(tokens[i + 1], cwd)
+            and classify_location(tokens[i + 1], cwd) == "cwd"
         ):
             return tokens[i + 1]
     return None
@@ -107,20 +125,32 @@ def main() -> None:
     # inherit.
     os.environ["PWD"] = cwd
 
-    hit = find_redundant_git_relocation(tokens, cwd)
+    hit = find_in_tree_git_relocation(tokens, cwd)
     if hit is not None:
-        flag, path = hit
+        flag, path, kind = hit
         invocation = f"{flag}{path}" if flag.endswith("=") else f"{flag} {path}"
-        deny(
-            f"`git {invocation}` points at the current working directory "
-            f"({cwd}). Drop this flag and keep any other flags that are "
-            "genuinely needed. If your cwd is wrong for this work, that's a "
-            "dispatch problem -- main session: `cd` to the right place once "
-            "(persists within the project); subagent: bail and have your "
-            "parent dispatch you with the right cwd (subagent `cd` doesn't "
-            "persist between calls). Don't paper over wrong cwd with "
-            "redundant relocation flags."
-        )
+        if kind == "cwd":
+            deny(
+                f"`git {invocation}` points at the current working directory "
+                f"({cwd}). Drop this flag and keep any other flags that are "
+                "genuinely needed. If your cwd is wrong for this work, that's "
+                "a dispatch problem -- main session: `cd` to the right place "
+                "once (persists within the project); subagent: bail and have "
+                "your parent dispatch you with the right cwd (subagent `cd` "
+                "doesn't persist between calls). Don't paper over wrong cwd "
+                "with redundant relocation flags."
+            )
+        else:  # kind == "subdir"
+            deny(
+                f"`git {invocation}` targets a path inside cwd ({cwd}). Drop "
+                "the flag -- `-C/--git-dir/--work-tree` defeats the auto-allow "
+                "matcher for read-only git subcommands and forces a permission "
+                "prompt. **Main session:** `cd <path>` (cwd persists) or "
+                "`EnterWorktree` for a registered worktree. **Subagent:** "
+                "`EnterWorktree` isn't available and `cd` doesn't persist "
+                "between calls -- bail and have your parent dispatch you with "
+                "the right cwd."
+            )
 
     cd_path = find_redundant_cd_git(tokens, cwd)
     if cd_path is not None:
