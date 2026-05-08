@@ -39,6 +39,7 @@
 - **`codex review` with no mode flag does not write a sentinel.** Codex's default mode is undocumented in the dotfiles' codex-review skill, so we fail-closed: gate will block, user must re-run with `--uncommitted` / `--commit` / `--base`.
 - **macOS `shasum -a 256` and Linux `sha256sum` produce identical hex output.** Verified by manual test in this plan's smoke-test task.
 - **`--uncommitted` review with untracked files is rejected.** The wrapper fails closed in this case (refuses to write the staged file with a stderr message). The user must `git add` the untracked files first, then re-run `codex-review-capture --uncommitted`. Trade-off: cleaner soundness (no index mutation, no replay logic in the gate) at the cost of an extra `git add` step.
+- **`--commit X` does not enforce push-range coverage.** The gate verifies the diff at HEAD relative to `X^` matches the reviewed hash, but it does not constrain *which commits* the user pushes. On a branch with multiple unpushed commits where only the tip was reviewed via `--commit`, the gate will accept the push of all of them. Use `--base <branch>` for multi-commit branches if you want every commit reviewed. We don't fail-closed on this because Andrew's upstream tracking config is frequently wrong, and a strict check would refuse legitimate reviews.
 
 ## Validation Gaps — Resolved
 

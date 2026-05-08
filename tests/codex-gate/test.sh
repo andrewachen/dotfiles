@@ -317,6 +317,29 @@ test_e2e_commit_review_with_dirty_tree_blocks_unreviewed_commit() {
   teardown_repo
 }
 
+test_gate_blocks_on_malformed_sentinel() {
+  setup_repo
+  echo "feature" > feat.txt
+  git add feat.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
+  # Write a sentinel with only one line (missing the hash)
+  printf 'truncated\n' > "/tmp/codex-gate-malformedsess-${REPO_NAME}"
+  gate_input=$(printf '{"session_id":"malformedsess","cwd":"%s"}' "$REPO")
+  set +e
+  out=$(echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>&1)
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate exits 2 on malformed sentinel"
+  if echo "$out" | grep -q 'BLOCKED'; then
+    printf '  ok stderr says BLOCKED\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL stderr does not say BLOCKED, got: %s\n' "$out"
+    FAILED=$((FAILED+1))
+  fi
+  rm -f "/tmp/codex-gate-malformedsess-${REPO_NAME}"
+  teardown_repo
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t

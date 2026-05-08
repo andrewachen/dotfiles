@@ -56,7 +56,7 @@ fi
 # We recompute HASH = sha256(git diff BASE_SHA) against the current working
 # tree. If the user committed exactly the reviewed changes (and nothing more),
 # the diff content is byte-identical and the hash matches.
-{ read -r BASE; read -r STORED_HASH; } < "$SENTINEL"
+{ read -r BASE; read -r STORED_HASH; } < "$SENTINEL" || true
 
 if [[ -z "$BASE" || -z "$STORED_HASH" ]]; then
   echo "BLOCKED: Codex review sentinel is malformed." >&2
