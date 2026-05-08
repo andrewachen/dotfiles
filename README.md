@@ -47,3 +47,22 @@ done
 ```
 
 - `codex-review-capture` — wrapper around `codex review` used by the `codex-review` skill. Captures the full transcript to `/tmp/codex-review.*` (owner-only, cleaned on reboot) and prints only the verdict (content after the last `^codex$` marker) to stdout.
+
+### Optional: codex pre-push gate
+
+`.claude/hooks/codex-gate.sh` and `.claude/hooks/codex-gate-pass.sh` together implement a per-project gate that blocks `git push` and `gh pr create` until a `codex review` has been run in the same Claude Code session, and re-blocks if the diff has changed since.
+
+These are **opt-in per project**, not global. Each project that wants the gate references the hook scripts from its own `.claude/settings.local.json`.
+
+Install the hook scripts once:
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+mkdir -p ~/.claude/hooks
+
+for h in codex-gate.sh codex-gate-pass.sh; do
+  ln -sf "$PWD/.claude/hooks/$h" "$HOME/.claude/hooks/$h"
+done
+```
+
+Then activate the gate in a project by merging the contents of [`.claude/hooks/settings.local.example.json`](.claude/hooks/settings.local.example.json) into that project's `.claude/settings.local.json`. The example uses each hook entry's `if` field (permission-rule syntax) so the scripts only spawn for the gated commands — no overhead on every Bash call.
