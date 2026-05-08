@@ -48,31 +48,34 @@ if [[ ! -f "$SENTINEL" ]]; then
   exit 2
 fi
 
-# Sentinel format: line 1 = HEAD_AT_REVIEW, line 2 = DIFF_HASH.
-# DIFF_HASH was computed at review time as sha256(git diff HEAD).
-# We recompute the diff from HEAD_AT_REVIEW to the current working tree: this
-# covers both commits made since the review and any remaining uncommitted
-# changes. If the net diff matches what was reviewed, allow the push.
-{ read -r HEAD_AT_REVIEW; read -r STORED_HASH; } < "$SENTINEL"
+# Sentinel format: line 1 = BASE_SHA, line 2 = DIFF_HASH.
+# BASE_SHA depends on the codex review mode the wrapper observed:
+#   --commit X     -> BASE_SHA = X^,                  HASH = sha256(git diff X^ X)
+#   --base B       -> BASE_SHA = merge-base(B, HEAD), HASH = sha256(git diff BASE HEAD)
+#   --uncommitted  -> BASE_SHA = HEAD,                HASH = sha256(git diff HEAD)
+# We recompute HASH = sha256(git diff BASE_SHA) against the current working
+# tree. If the user committed exactly the reviewed changes (and nothing more),
+# the diff content is byte-identical and the hash matches.
+{ read -r BASE; read -r STORED_HASH; } < "$SENTINEL"
 
-if [[ -z "$HEAD_AT_REVIEW" || -z "$STORED_HASH" ]]; then
+if [[ -z "$BASE" || -z "$STORED_HASH" ]]; then
   echo "BLOCKED: Codex review sentinel is malformed." >&2
   echo "Run codex-review-capture again, then retry." >&2
   exit 2
 fi
 
-if ! git rev-parse --verify "$HEAD_AT_REVIEW^{commit}" >/dev/null 2>&1; then
-  echo "BLOCKED: The commit reviewed by codex ($HEAD_AT_REVIEW) is no longer" >&2
+if ! git rev-parse --verify "$BASE^{commit}" >/dev/null 2>&1; then
+  echo "BLOCKED: The base reviewed by codex ($BASE) is no longer" >&2
   echo "reachable (rebased, reset, or branch deleted). Run codex-review-capture" >&2
   echo "again against the current branch, then retry." >&2
   exit 2
 fi
 
-CURRENT_DIFF_HASH=$(git diff "$HEAD_AT_REVIEW" 2>/dev/null | _sha256)
+CURRENT_DIFF_HASH=$(git diff "$BASE" 2>/dev/null | _sha256)
 
 if [[ "$CURRENT_DIFF_HASH" != "$STORED_HASH" ]]; then
   echo "BLOCKED: Code changed since last codex review." >&2
-  echo "The diff from the reviewed base ($HEAD_AT_REVIEW) to the current tree" >&2
+  echo "The diff from the reviewed base ($BASE) to the current tree" >&2
   echo "no longer matches what codex saw. Either you added work beyond what was" >&2
   echo "reviewed, or you modified the reviewed changes. Run codex-review-capture" >&2
   echo "again, then retry." >&2

@@ -258,6 +258,65 @@ test_pass_hook_exits_zero_when_no_staged_marker() {
   teardown_repo
 }
 
+test_e2e_uncommitted_review_then_push_passes() {
+  setup_repo
+  echo "feature" > feat.txt
+  git add feat.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline before feature"
+  echo "modified feature" > feat.txt
+  stderr=$("$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  staged=$(echo "$stderr" | grep -oE 'staged=[^[:space:]]+' | head -n1 | cut -d= -f2-)
+  pass_input=$(printf '{"session_id":"e2e1","cwd":"%s","tool_response":{"stderr":"%s"}}' "$REPO" "codex-review-capture: staged=$staged")
+  echo "$pass_input" | bash "$DOTFILES/.claude/hooks/codex-gate-pass.sh"
+  gate_input=$(printf '{"session_id":"e2e1","cwd":"%s"}' "$REPO")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate accepts after fresh uncommitted review"
+  assert_no_file "/tmp/codex-gate-e2e1-${REPO_NAME}"
+  teardown_repo
+}
+
+test_e2e_uncommitted_review_then_extra_edit_blocks() {
+  setup_repo
+  echo "feature" > feat.txt
+  git add feat.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
+  echo "modified feature" > feat.txt
+  stderr=$("$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  staged=$(echo "$stderr" | grep -oE 'staged=[^[:space:]]+' | head -n1 | cut -d= -f2-)
+  pass_input=$(printf '{"session_id":"e2e2","cwd":"%s","tool_response":{"stderr":"%s"}}' "$REPO" "codex-review-capture: staged=$staged")
+  echo "$pass_input" | bash "$DOTFILES/.claude/hooks/codex-gate-pass.sh"
+  echo "extra modification" > feat.txt
+  gate_input=$(printf '{"session_id":"e2e2","cwd":"%s"}' "$REPO")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate blocks (exit 2) when tree diverges from review"
+  rm -f "/tmp/codex-gate-e2e2-${REPO_NAME}"
+  teardown_repo
+}
+
+test_e2e_commit_review_with_dirty_tree_blocks_unreviewed_commit() {
+  setup_repo
+  echo "reviewed_change" > r.txt
+  git add r.txt && git -c user.email=t@t -c user.name=t commit -q -m "reviewed"
+  COMMIT=$(git rev-parse HEAD)
+  echo "unreviewed_dirty" > u.txt
+  git add u.txt
+  stderr=$("$DOTFILES/bin/codex-review-capture" --commit "$COMMIT" 2>&1 >/dev/null)
+  staged=$(echo "$stderr" | grep -oE 'staged=[^[:space:]]+' | head -n1 | cut -d= -f2-)
+  pass_input=$(printf '{"session_id":"e2e3","cwd":"%s","tool_response":{"stderr":"%s"}}' "$REPO" "codex-review-capture: staged=$staged")
+  echo "$pass_input" | bash "$DOTFILES/.claude/hooks/codex-gate-pass.sh"
+  git -c user.email=t@t -c user.name=t commit -q -m "unreviewed"
+  gate_input=$(printf '{"session_id":"e2e3","cwd":"%s"}' "$REPO")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "P1 #2: gate blocks when committing unreviewed dirty edits after --commit review"
+  rm -f "/tmp/codex-gate-e2e3-${REPO_NAME}"
+  teardown_repo
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t
