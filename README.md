@@ -47,3 +47,20 @@ done
 ```
 
 - `codex-review-capture` — wrapper around `codex review` used by the `codex-review` skill. Captures the full transcript to `/tmp/codex-review.*` (owner-only, cleaned on reboot) and prints only the verdict (content after the last `^codex$` marker) to stdout.
+
+### Hooks: symlink from this repo, wire into settings.json
+
+`PreToolUse` hooks live under `.claude/hooks/`. Symlink them into `~/.claude/hooks/`:
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+mkdir -p ~/.claude/hooks
+
+for h in block-git-dash-c.py; do
+  ln -sf "$PWD/.claude/hooks/$h" "$HOME/.claude/hooks/$h"
+done
+```
+
+Then merge `.claude/settings.git-dash-C-example.json` into `~/.claude/settings.json` to wire the hook into the harness. `~/.claude/settings.json` is intentionally NOT symlinked — it carries machine-specific env vars that don't belong in the repo.
+
+- `block-git-dash-c.py` — denies `git -C <cwd>`, `git --git-dir <cwd>/.git`, `git --work-tree <cwd>`, and `cd <cwd> && git ...`. All trigger unnecessary sandbox approval prompts when the path resolves to the current working directory; CLAUDE.md tells Claude not to do this, but the soft prompt was unreliable. The hook is hard enforcement: a deny with a `permissionDecisionReason` short-circuits the prompt and Claude retries without the redundant relocation. Tests live under `tests/`.

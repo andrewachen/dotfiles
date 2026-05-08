@@ -1,0 +1,21 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/achen/.claude/hooks/block-git-dash-c.py",
+            "if": "Bash(git *)"
+          },
+          {
+            "type": "command",
+            "command": "/home/achen/.claude/hooks/block-git-dash-c.py",
+            "if": "Bash(cd *)"
+          }
+        ]
+      }
+    ]
+  }
+}
