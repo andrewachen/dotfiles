@@ -221,6 +221,31 @@ test_wrapper_accepts_equals_form_base_flag() {
   teardown_repo
 }
 
+test_pass_hook_promotes_staged_to_sentinel() {
+  setup_repo
+  staged="/tmp/codex-gate-staged-${UID}-${REPO_NAME}-99999"
+  printf 'abcdef\n123hash\n' > "$staged"
+  input=$(printf '{"session_id":"sess1","cwd":"%s","tool_response":{"stderr":"codex-review-capture: staged=%s\\n"}}' "$REPO" "$staged")
+  echo "$input" | bash "$DOTFILES/.claude/hooks/codex-gate-pass.sh"
+  sentinel="/tmp/codex-gate-sess1-${REPO_NAME}"
+  assert_file_exists "$sentinel"
+  assert_no_file "$staged"
+  if [[ -f "$sentinel" ]]; then
+    assert_eq "$(sed -n 1p "$sentinel")" "abcdef" "promoted base preserved"
+    assert_eq "$(sed -n 2p "$sentinel")" "123hash" "promoted hash preserved"
+  fi
+  rm -f "$sentinel"
+  teardown_repo
+}
+
+test_pass_hook_noops_without_staged_line() {
+  setup_repo
+  input=$(printf '{"session_id":"sess2","cwd":"%s","tool_response":{"stderr":"unrelated output"}}' "$REPO")
+  echo "$input" | bash "$DOTFILES/.claude/hooks/codex-gate-pass.sh"
+  assert_no_file "/tmp/codex-gate-sess2-${REPO_NAME}"
+  teardown_repo
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t
