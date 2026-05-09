@@ -4,7 +4,10 @@
 
 set -uo pipefail
 
+original_args=("$@")
+
 tmux_bin=${TMUX_SCREEN_COMPAT_TMUX:-tmux}
+screen_bin=${TMUX_SCREEN_COMPAT_REAL_SCREEN:-/usr/bin/screen}
 
 session_name=
 target=
@@ -218,6 +221,17 @@ if [[ $attach_requested == true ]]; then
         fi
 
         run_tmux new-session
+    fi
+
+    if [[ -n $target ]] && ! "$tmux_bin" has-session -t "$target" 2>/dev/null; then
+        if [[ -x $screen_bin ]] && ! [[ $screen_bin -ef ${BASH_SOURCE[0]} ]]; then
+            if { "$screen_bin" -ls 2>/dev/null || true; } \
+                | awk -v t="$target" '$1 ~ /^[0-9]+\./ {
+                      n = $1; sub(/^[0-9]+\./, "", n); if (n == t) found = 1
+                  } END { exit !found }'; then
+                exec "$screen_bin" "${original_args[@]}"
+            fi
+        fi
     fi
 
     args=(attach-session)
