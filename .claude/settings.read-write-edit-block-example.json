@@ -1,0 +1,31 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/achen/.claude/hooks/read-write-edit-block.py",
+            "if": "Bash(cat *)"
+          },
+          {
+            "type": "command",
+            "command": "/home/achen/.claude/hooks/read-write-edit-block.py",
+            "if": "Bash(head *)"
+          },
+          {
+            "type": "command",
+            "command": "/home/achen/.claude/hooks/read-write-edit-block.py",
+            "if": "Bash(sed *)"
+          },
+          {
+            "type": "command",
+            "command": "/home/achen/.claude/hooks/read-write-edit-block.py",
+            "if": "Bash(echo *)"
+          }
+        ]
+      }
+    ]
+  }
+}
