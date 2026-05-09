@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# ABOUTME: PostToolUse hook that promotes a staged file written by
-# ABOUTME: codex-review-capture into a session-keyed sentinel that codex-gate.sh
-# ABOUTME: verifies. Filtering to codex-review-capture / codex review is the
-# ABOUTME: caller's job via the hook's `if` field -- see settings.local.example.json.
+# ABOUTME: PostToolUse hook promoting a codex-review-capture staged file into a
+# ABOUTME: session-keyed sentinel that codex-gate.sh verifies on the next gate.
 
 set -euo pipefail
 

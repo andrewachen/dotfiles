@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-# ABOUTME: Test suite for .claude/hooks/block-git-dash-c.py. Pipes synthetic
-# ABOUTME: PreToolUse JSON into the hook and asserts deny vs allow per case.
-# ABOUTME: Run from anywhere: `python3 tests/test_block_git_dash_c.py`.
+# ABOUTME: Test suite for .claude/hooks/block-git-dash-c.py — pipes synthetic
+# ABOUTME: PreToolUse JSON in and asserts deny/allow. Run: python3 tests/test_*.py.
 
 import json
 import subprocess

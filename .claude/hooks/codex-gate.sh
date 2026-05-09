@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# ABOUTME: PreToolUse hook that blocks the gated tool call unless a codex
-# ABOUTME: review sentinel exists with a matching diff hash. Filtering to
-# ABOUTME: specific commands (e.g. `git push`, `gh pr create`) is the caller's
-# ABOUTME: job via the hook's `if` field -- see settings.local.example.json.
+# ABOUTME: PreToolUse hook blocking the gated tool call unless a codex sentinel
+# ABOUTME: with a matching diff hash exists. Caller filters via hook `if` field.
 
 set -euo pipefail
 

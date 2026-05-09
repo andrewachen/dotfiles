@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
-# ABOUTME: PreToolUse Bash hook that denies wasteful repo relocation. Blocks
-# ABOUTME: `git -C/--git-dir/--work-tree <path>` whenever <path> resolves into
-# ABOUTME: the current working directory's tree (cwd, cwd/.git, or any subdir),
-# ABOUTME: and blocks `cd <cwd> && git ...` exact-match. Both patterns force
-# ABOUTME: permission prompts (the auto-allow matcher for read-only git
-# ABOUTME: subcommands does not match `-C`-prefixed forms). Returns
-# ABOUTME: permissionDecision=deny with a reason so Claude reroutes through
-# ABOUTME: cd / EnterWorktree / parent dispatch instead.
+# ABOUTME: PreToolUse Bash hook denying redundant `git -C/--git-dir/--work-tree`
+# ABOUTME: into cwd and `cd <cwd> && git ...` — both defeat the auto-allow matcher.
 
 import json
 import os
