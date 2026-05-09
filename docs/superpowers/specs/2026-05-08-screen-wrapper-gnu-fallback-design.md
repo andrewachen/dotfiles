@@ -70,8 +70,9 @@ Pseudocode:
 if target is empty: skip fallback (today's behavior)
 if tmux has-session -t "$target" succeeds: skip fallback (today's behavior)
 if not -x "$screen_bin": skip fallback (today's behavior, no recursion risk)
-if readlink -f "$screen_bin" == readlink -f "$BASH_SOURCE[0]": skip fallback (recursion guard)
-parse "$screen_bin" -ls output for a line matching ".${target}" exactly
+if "$screen_bin" -ef "${BASH_SOURCE[0]}": skip fallback (recursion guard)
+parse "$screen_bin" -ls output (with || true to neutralize exit) for a line
+  matching ".${target}" exactly
 if no match: skip fallback (today's behavior)
 exec "$screen_bin" "${original_args[@]}"
 ```
@@ -83,12 +84,14 @@ which produces tmux's existing "no such session" error.
 
 - `[[ -x "$screen_bin" ]]` gate: missing path, non-executable, or dangling
   symlink → no fallback, no crash.
-- `"$screen_bin" -ls` invoked with `stderr` redirected to `/dev/null` and
-  exit code ignored. We only inspect stdout for a session-line match. (GNU
-  screen's exit code from `-ls` is documented as varying by version and
-  state; ignoring it avoids fragile assumptions.)
-- Self-recursion guard: if `$screen_bin` resolves (via `readlink -f`) to the
-  same file as `BASH_SOURCE[0]`, skip fallback. Protects against the case
+- `"$screen_bin" -ls` invoked with `stderr` redirected to `/dev/null`. The
+  command is wrapped with `|| true` so its exit code can't poison the pipeline
+  under `set -o pipefail`. We only inspect stdout for a session-line match.
+  (GNU screen's exit code from `-ls` varies by version and state, so we
+  neutralize it explicitly rather than depending on it.)
+- Self-recursion guard: if `$screen_bin` is the same file as
+  `${BASH_SOURCE[0]}` (using bash's portable `-ef` test, which works on Linux
+  and macOS without GNU coreutils), skip fallback. Protects against the case
   where this wrapper is installed *as* the resolved screen binary.
 - All guards are local `if` checks. No `set -e` traps, no aborts.
 
@@ -107,10 +110,10 @@ A session named `foo` appears as `<digits>.foo<whitespace>`. Match by
 splitting on `.` and comparing field 2 exactly to `target` — avoids regex
 escaping headaches when `target` contains characters like `.`, `+`, `*`.
 
-A simple `awk` invocation works:
+A simple `awk` invocation works (note `|| true` to keep `pipefail` happy):
 
 ```bash
-"$screen_bin" -ls 2>/dev/null \
+{ "$screen_bin" -ls 2>/dev/null || true; } \
   | awk -v t="$target" '$1 ~ /^[0-9]+\./ {
       n = $1; sub(/^[0-9]+\./, "", n); if (n == t) found = 1
     } END { exit !found }'
@@ -176,14 +179,14 @@ In `bin/screen` itself:
   > tmux session and `/usr/bin/screen` lists one, the wrapper hands off to
   > GNU screen with the original arguments. Other modes do not fall back.
 
-- Update the second `ABOUTME:` line. Current:
+- Update the second `ABOUTME:` line — keeping the file at exactly two
+  ABOUTME lines per repo convention. Current:
 
   > It intentionally does not fall back to real screen for unsupported args.
 
   Replace with:
 
-  > Unsupported args still fail loudly, but a named attach with no tmux match
-  > falls back to GNU screen if it has the session.
+  > Named attach falls back to /usr/bin/screen on tmux miss; other modes fail loudly.
 
 - Leave the `die()` message as-is; it fires on unsupported args, where the
   no-fallback rule still holds.

@@ -313,12 +313,13 @@ fi
 Replace with:
 ```bash
     if [[ -n $target ]] && ! "$tmux_bin" has-session -t "$target" 2>/dev/null; then
-        if [[ -x $screen_bin ]] \
-            && "$screen_bin" -ls 2>/dev/null \
+        if [[ -x $screen_bin ]] && ! [[ $screen_bin -ef ${BASH_SOURCE[0]} ]]; then
+            if { "$screen_bin" -ls 2>/dev/null || true; } \
                 | awk -v t="$target" '$1 ~ /^[0-9]+\./ {
                       n = $1; sub(/^[0-9]+\./, "", n); if (n == t) found = 1
                   } END { exit !found }'; then
-            exec "$screen_bin" "${original_args[@]}"
+                exec "$screen_bin" "${original_args[@]}"
+            fi
         fi
     fi
 
@@ -333,6 +334,16 @@ Replace with:
     run_tmux "${args[@]}"
 fi
 ```
+
+Notes on the gate:
+- `{ "$screen_bin" -ls 2>/dev/null || true; }` neutralizes the producer's
+  exit code. Without `|| true`, `set -o pipefail` (active in `bin/screen`)
+  would fail the pipeline whenever GNU screen `-ls` returns non-zero, even
+  though awk's match was successful.
+- `[[ a -ef b ]]` is bash's portable same-file test. Works on Linux *and*
+  macOS without GNU coreutils, unlike `readlink -f`. Returns false if either
+  file doesn't exist, which is fine — the surrounding `-x` guard already
+  ensures `$screen_bin` exists.
 
 - [ ] **Step 5: Run the new test, verify it passes**
 
@@ -540,23 +551,36 @@ git commit -m "test(screen): regression coverage for missing screen binary"
 
 ---
 
-## Task 9: Failing test — self-recursion guard
+## Task 9: Regression test — self-recursion guard
+
+The recursion guard (`-ef` same-file test) is already in place from Task 3.
+This task verifies the guard works by simulating the failure mode that
+would occur without it.
 
 **Files:**
 - Modify: `tests/screen/test.sh`
-- Modify: `bin/screen`
 
-To make recursion *actually* trigger without the guard, the test rewrites
-the tmux stub so `tmux list-sessions` returns screen-formatted output. That
-way, when the wrapper-as-screen recursively invokes `screen -ls`, the inner
-wrapper execs `tmux list-sessions`, which returns content that fools the
-awk matcher into finding the target — driving exec → recurse → exec.
+The test rewrites the tmux stub so `tmux list-sessions` returns
+screen-formatted output. That way, if the guard were absent, the outer
+wrapper's `screen -ls` probe would run the inner wrapper-as-screen with
+`-ls`, which execs `tmux list-sessions`, which prints `12345.foo`. Awk
+matches, exec re-enters the wrapper, infinite loop. With the guard, `-ef`
+sees both paths resolve to the same inode and short-circuits before exec.
 
-- [ ] **Step 1: Append the failing test**
+The `timeout` binary is required to reliably detect the loop; the test
+fails explicitly if `timeout` is unavailable rather than silently passing.
+
+- [ ] **Step 1: Append the test**
 
 ```bash
 test_self_recursion_guard() {
   setup_test
+  if ! command -v timeout >/dev/null 2>&1; then
+    printf '  FAIL self-recursion: timeout(1) required to test the guard\n'
+    FAILED=$((FAILED+1))
+    teardown_test
+    return
+  fi
   STUB_TMUX_SESSIONS=""
   # Replace screen with a symlink to the wrapper itself.
   rm -f "$TMPDIR_TEST/screen"
@@ -591,57 +615,19 @@ EOF
 }
 ```
 
-- [ ] **Step 2: Run, verify it fails**
+- [ ] **Step 2: Run, verify pass**
 
 Run: `bash tests/screen/test.sh`
-Expected: FAIL — without the guard, the outer wrapper's `screen -ls` probe
-runs the inner wrapper with `-ls`, which execs `tmux list-sessions`, which
-prints `12345.foo`. Awk matches. The outer wrapper then execs the screen
-symlink (the wrapper) with `-r foo`. That re-enters the same path. The
-`timeout 5` fires (rc=124).
+Expected: `17 passed, 0 failed`. The `-ef` guard from Task 3 prevents
+recursion: `[[ $screen_bin -ef "${BASH_SOURCE[0]}" ]]` evaluates true (both
+resolve to the same inode), the gate short-circuits, the wrapper falls
+through to tmux attach-session.
 
-- [ ] **Step 3: Add the recursion guard**
-
-Find in `bin/screen`:
-```bash
-    if [[ -n $target ]] && ! "$tmux_bin" has-session -t "$target" 2>/dev/null; then
-        if [[ -x $screen_bin ]] \
-            && "$screen_bin" -ls 2>/dev/null \
-                | awk -v t="$target" '$1 ~ /^[0-9]+\./ {
-                      n = $1; sub(/^[0-9]+\./, "", n); if (n == t) found = 1
-                  } END { exit !found }'; then
-            exec "$screen_bin" "${original_args[@]}"
-        fi
-    fi
-```
-
-Replace with:
-```bash
-    if [[ -n $target ]] && ! "$tmux_bin" has-session -t "$target" 2>/dev/null; then
-        if [[ -x $screen_bin ]]; then
-            screen_real=$(readlink -f "$screen_bin" 2>/dev/null || true)
-            wrapper_real=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || true)
-            if [[ -n $screen_real && -n $wrapper_real && $screen_real != "$wrapper_real" ]] \
-                && "$screen_bin" -ls 2>/dev/null \
-                    | awk -v t="$target" '$1 ~ /^[0-9]+\./ {
-                          n = $1; sub(/^[0-9]+\./, "", n); if (n == t) found = 1
-                      } END { exit !found }'; then
-                exec "$screen_bin" "${original_args[@]}"
-            fi
-        fi
-    fi
-```
-
-- [ ] **Step 4: Run, verify pass**
-
-Run: `bash tests/screen/test.sh`
-Expected: `17 passed, 0 failed`.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add bin/screen tests/screen/test.sh
-git commit -m "feat(screen): guard against self-recursion if installed as /usr/bin/screen"
+git add tests/screen/test.sh
+git commit -m "test(screen): regression coverage for self-recursion guard"
 ```
 
 ---
@@ -697,6 +683,8 @@ git commit -m "test(screen): literal session-name match handles regex-special ch
 
 - [ ] **Step 1: Update ABOUTME header**
 
+The repo convention is exactly two `ABOUTME:` lines. Keep it to two.
+
 Find in `bin/screen`:
 ```bash
 # ABOUTME: Compatibility wrapper that maps common GNU screen invocations to tmux.
@@ -706,8 +694,7 @@ Find in `bin/screen`:
 Replace with:
 ```bash
 # ABOUTME: Compatibility wrapper that maps common GNU screen invocations to tmux.
-# ABOUTME: Unsupported args still fail loudly, but a named attach with no tmux match
-# ABOUTME: falls back to GNU screen if /usr/bin/screen has the session.
+# ABOUTME: Named attach falls back to /usr/bin/screen on tmux miss; other modes fail loudly.
 ```
 
 - [ ] **Step 2: Update the usage() heredoc**
