@@ -38,6 +38,8 @@
 
 - **`codex review` with no mode flag does not write a sentinel.** Codex's default mode is undocumented in the dotfiles' codex-review skill, so we fail-closed: gate will block, user must re-run with `--uncommitted` / `--commit` / `--base`.
 - **macOS `shasum -a 256` and Linux `sha256sum` produce identical hex output.** Verified by manual test in this plan's smoke-test task.
+- **`--uncommitted` review with untracked files is rejected.** The wrapper fails closed in this case (refuses to write the staged file with a stderr message). The user must `git add` the untracked files first, then re-run `codex-review-capture --uncommitted`. Trade-off: cleaner soundness (no index mutation, no replay logic in the gate) at the cost of an extra `git add` step.
+- **`--commit X` does not enforce push-range coverage.** The gate verifies the diff at HEAD relative to `X^` matches the reviewed hash, but it does not constrain *which commits* the user pushes. On a branch with multiple unpushed commits where only the tip was reviewed via `--commit`, the gate will accept the push of all of them. Use `--base <branch>` for multi-commit branches if you want every commit reviewed. We don't fail-closed on this because Andrew's upstream tracking config is frequently wrong, and a strict check would refuse legitimate reviews.
 
 ## Validation Gaps — Resolved
 
@@ -342,10 +344,14 @@ fi
 review_mode=""
 review_arg=""
 argv=("$@")
+# `codex review` (clap parser) accepts both `--flag value` and `--flag=value`
+# forms. We handle both. Last flag wins on conflict.
 for ((i=0; i<${#argv[@]}; i++)); do
     case "${argv[i]}" in
         --commit)      review_mode="commit";      review_arg="${argv[i+1]:-}" ;;
+        --commit=*)    review_mode="commit";      review_arg="${argv[i]#--commit=}" ;;
         --base)        review_mode="base";        review_arg="${argv[i+1]:-}" ;;
+        --base=*)      review_mode="base";        review_arg="${argv[i]#--base=}" ;;
         --uncommitted) review_mode="uncommitted"; review_arg="" ;;
     esac
 done
@@ -353,8 +359,8 @@ done
 review_base=""
 review_hash=""
 repo_name=""
-if git rev-parse --show-toplevel >/dev/null 2>&1; then
-    repo_name=$(basename "$(git rev-parse --show-toplevel)")
+if topdir=$(git rev-parse --show-toplevel 2>/dev/null); then
+    repo_name=$(basename "$topdir")
     case "$review_mode" in
         commit)
             if [[ -n "$review_arg" ]] && review_base=$(git rev-parse "${review_arg}^" 2>/dev/null); then
@@ -368,7 +374,24 @@ if git rev-parse --show-toplevel >/dev/null 2>&1; then
             ;;
         uncommitted)
             if review_base=$(git rev-parse HEAD 2>/dev/null); then
-                review_hash=$(git diff HEAD 2>/dev/null | _sha256) || review_hash=""
+                # `codex review --uncommitted` covers staged, unstaged, AND
+                # untracked changes. `git diff HEAD` only sees staged + unstaged,
+                # so an untracked-only review would record an empty-diff hash and
+                # the gate would over-block once those files are committed. Fail
+                # closed: if untracked files are present, refuse to write the
+                # staged file. The user must `git add` them first.
+                # `git ls-files --others` is cwd-scoped without explicit paths,
+                # so we use `-C "$topdir"` to scan the whole repo regardless of
+                # where the wrapper was invoked.
+                untracked=$(git -C "$topdir" ls-files --others --exclude-standard 2>/dev/null)
+                if [[ -n "$untracked" ]]; then
+                    printf 'codex-review-capture: --uncommitted review includes untracked files,\n' >&2
+                    printf 'but the gate cannot verify them. Stage them with `git add` first,\n' >&2
+                    printf 'then re-run codex-review-capture.\n\nUntracked:\n%s\n' "$untracked" >&2
+                    review_base=""
+                else
+                    review_hash=$(git diff HEAD 2>/dev/null | _sha256) || review_hash=""
+                fi
             fi
             ;;
     esac

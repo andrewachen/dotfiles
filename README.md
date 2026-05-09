@@ -48,19 +48,30 @@ done
 
 - `codex-review-capture` — wrapper around `codex review` used by the `codex-review` skill. Captures the full transcript to `/tmp/codex-review.*` (owner-only, cleaned on reboot) and prints only the verdict (content after the last `^codex$` marker) to stdout.
 
-### Hooks: symlink from this repo, wire into settings.json
+### Optional: codex pre-push gate
 
-`PreToolUse` hooks live under `.claude/hooks/`. Symlink them into `~/.claude/hooks/`:
+`bin/codex-review-capture` and the hooks in `.claude/hooks/` together implement a per-project gate that blocks `git push` and `gh pr create` until a `codex review` has run with a recognized mode flag in the same Claude Code session, and re-blocks if the diff has changed since.
+
+Flow:
+1. The model runs `codex-review-capture --commit <sha>` (or `--base <branch>`, or `--uncommitted`). The wrapper detects the mode and computes `(BASE, HASH)` for exactly the diff codex sees, *before* invoking codex (so a long-running review can't be raced by working-tree edits). On `rc=0` the wrapper leaves a staged file at `/tmp/codex-gate-staged-${UID}-${repo}-${pid}` and prints `staged=<path>` to stderr.
+2. `codex-gate-pass.sh` (PostToolUse, only fires on success) reads the staged path from `tool_response.stderr` and renames the file to a session-keyed sentinel `/tmp/codex-gate-${SESSION_ID}-${repo}`.
+3. `codex-gate.sh` (PreToolUse on `git push *` / `gh pr create *`) recomputes `git diff BASE` against the current tree, compares to the stored hash, and either consumes the sentinel and allows the push or exits 2 with a message.
+
+Caveats:
+- The hooks are opt-in per project. Each project that wants the gate references the scripts from its own `.claude/settings.local.json`.
+- `codex-review-capture --uncommitted` requires a clean untracked state. If untracked files are present, the wrapper fails closed with a stderr message asking you to `git add` them first. This avoids index mutation and keeps the gate's verification logic simple.
+- `codex-review-capture` without a mode flag does not write a sentinel — the gate fails closed.
+- `--commit X` reviews only commit X's diff. The gate then checks that the working tree at push time produces the same diff vs `X^`, but it does NOT verify that only X is being pushed. For multi-commit branches, prefer `--base <branch>` to review the full unpushed range.
+
+Install the hook scripts once:
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
 mkdir -p ~/.claude/hooks
 
-for h in block-git-dash-c.py; do
+for h in codex-gate.sh codex-gate-pass.sh; do
   ln -sf "$PWD/.claude/hooks/$h" "$HOME/.claude/hooks/$h"
 done
 ```
 
-Then merge `.claude/settings.git-dash-C-example.json` into `~/.claude/settings.json` to wire the hook into the harness. `~/.claude/settings.json` is intentionally NOT symlinked — it carries machine-specific env vars that don't belong in the repo.
-
-- `block-git-dash-c.py` — denies `git -C <cwd>`, `git --git-dir <cwd>/.git`, `git --work-tree <cwd>`, and `cd <cwd> && git ...`. All trigger unnecessary sandbox approval prompts when the path resolves to the current working directory; CLAUDE.md tells Claude not to do this, but the soft prompt was unreliable. The hook is hard enforcement: a deny with a `permissionDecisionReason` short-circuits the prompt and Claude retries without the redundant relocation. Tests live under `tests/`.
+Activate the gate in a project by merging the contents of [`.claude/hooks/settings.local.example.json`](.claude/hooks/settings.local.example.json) into that project's `.claude/settings.local.json`. The example uses each hook entry's `if` field (permission-rule syntax) so the scripts only spawn for the gated commands — no overhead on every Bash call.

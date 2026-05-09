@@ -88,3 +88,9 @@ Triage: fix real defects now; document stylistic disagreements; ignore obvious m
 ## When project hooks enforce it
 
 Some projects gate push on a successful `codex review`. If there's no hook, Codex review is optional but available on request. Always run it when Andrew explicitly asks for a "review" or "full review".
+
+When the dotfiles' codex-gate hooks are wired up, the gate only opens after a `codex-review-capture` invocation that includes one of `--commit <sha>`, `--base <branch>`, or `--uncommitted`. A bare `codex review` or `codex-review-capture` (no mode flag) writes no sentinel and the next push will be blocked. Always pass an explicit mode flag in gated projects.
+
+The `--uncommitted` mode further requires a clean untracked state — if untracked files are present, the wrapper fails closed and asks you to `git add` them first. This is a deliberate trade-off: the gate's verification is `git diff BASE` against the current tree, which doesn't see untracked files, so we require everything codex reviews to be tracked at review time.
+
+For multi-commit branches, prefer `--base <branch>` over `--commit <sha>`. The gate's per-mode hash math doesn't constrain *which* commits are being pushed — `--base` covers the whole unpushed range; `--commit X` only verifies X.
