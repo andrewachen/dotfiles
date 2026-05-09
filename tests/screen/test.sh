@@ -79,6 +79,18 @@ test_harness_smoke() {
   teardown_test
 }
 
+test_attach_when_tmux_has_session() {
+  setup_test
+  STUB_TMUX_SESSIONS="foo"
+  STUB_SCREEN_LS=""
+  "$DOTFILES/bin/screen" -r foo >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  screen_log=$(cat "$STUB_SCREEN_LOG")
+  assert_contains "$tmux_log" "attach-session -t foo" "tmux attach-session was invoked"
+  assert_not_contains "$screen_log" "-r" "screen -r was not invoked"
+  teardown_test
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t
