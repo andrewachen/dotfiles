@@ -1,6 +1,6 @@
 #!/bin/bash
 # ABOUTME: Compatibility wrapper that maps common GNU screen invocations to tmux.
-# ABOUTME: It intentionally does not fall back to real screen for unsupported args.
+# ABOUTME: Named attach falls back to /usr/bin/screen on tmux miss; other modes fail loudly.
 
 set -uo pipefail
 
@@ -40,7 +40,13 @@ Supported:
   screen -dmS NAME [COMMAND ...]
 
 In this wrapper, -D detaches other tmux clients without sending SIGHUP/logout.
+
 Unsupported screen options do not fall back to GNU screen.
+
+Fallback: if a named-target attach (-r, -x, -d -r, -D -r) finds no matching
+tmux session and /usr/bin/screen lists one, the wrapper hands off to GNU
+screen with the original arguments. Other modes do not fall back.
+
 Use tmux directly for behavior outside this compatibility set.
 EOF
 }
