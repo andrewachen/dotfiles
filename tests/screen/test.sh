@@ -103,6 +103,18 @@ test_fallback_when_tmux_missing_screen_present() {
   teardown_test
 }
 
+test_R_does_not_fall_back() {
+  setup_test
+  STUB_TMUX_SESSIONS=""
+  STUB_SCREEN_LS=$'There are screens on:\n\t12345.foo\t(Detached)\n'
+  "$DOTFILES/bin/screen" -R foo >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  screen_log=$(cat "$STUB_SCREEN_LOG")
+  assert_contains "$tmux_log" "new-session -A -s foo" "tmux new-session -A was invoked"
+  assert_not_contains "$screen_log" "screen -R" "screen -R was NOT invoked"
+  teardown_test
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t
