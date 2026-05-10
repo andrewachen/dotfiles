@@ -171,6 +171,47 @@ test_screen_missing() {
   teardown_test
 }
 
+test_self_recursion_guard() {
+  setup_test
+  if ! command -v timeout >/dev/null 2>&1; then
+    printf '  FAIL self-recursion: timeout(1) required to test the guard\n'
+    FAILED=$((FAILED+1))
+    teardown_test
+    return
+  fi
+  STUB_TMUX_SESSIONS=""
+  # Replace screen with a symlink to the wrapper itself.
+  rm -f "$TMPDIR_TEST/screen"
+  ln -sf "$DOTFILES/bin/screen" "$TMPDIR_TEST/screen"
+  # Replace tmux stub so list-sessions emits screen-format output containing foo.
+  cat > "$TMPDIR_TEST/tmux" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${STUB_TMUX_LOG:-}" ]]; then
+    printf 'tmux'
+    for arg in "$@"; do printf ' %q' "$arg"; done
+    printf '\n'
+fi >> "${STUB_TMUX_LOG:-/dev/null}"
+case "${1:-}" in
+    has-session) exit 1 ;;
+    list-sessions) printf '\t12345.foo\t(Detached)\n'; exit 0 ;;
+    *) exit 0 ;;
+esac
+EOF
+  chmod +x "$TMPDIR_TEST/tmux"
+  set +e
+  timeout 5 "$DOTFILES/bin/screen" -r foo >/dev/null 2>&1
+  rc=$?
+  set -e
+  if [[ "$rc" == "124" ]]; then
+    printf '  FAIL self-recursion: timeout fired, wrapper looped\n'
+    FAILED=$((FAILED+1))
+  else
+    printf '  ok self-recursion: did not loop (rc=%s)\n' "$rc"
+    PASSED=$((PASSED+1))
+  fi
+  teardown_test
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t
