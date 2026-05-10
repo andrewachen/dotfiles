@@ -148,6 +148,19 @@ test_D_r_falls_back() {
   teardown_test
 }
 
+test_neither_has_session() {
+  setup_test
+  STUB_TMUX_SESSIONS=""
+  STUB_SCREEN_LS=""
+  "$DOTFILES/bin/screen" -r foo >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  screen_log=$(cat "$STUB_SCREEN_LOG")
+  assert_contains "$tmux_log" "attach-session -t foo" "tmux attach-session -t foo was invoked (today's error path)"
+  assert_contains "$screen_log" "screen -ls" "screen -ls probe ran"
+  assert_not_contains "$screen_log" "screen -r" "screen -r was NOT invoked"
+  teardown_test
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t
