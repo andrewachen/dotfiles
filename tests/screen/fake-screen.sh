@@ -14,7 +14,7 @@ fi >> "${STUB_SCREEN_LOG:-/dev/null}"
 
 if [[ "${1:-}" == "-ls" ]]; then
     printf '%b' "${STUB_SCREEN_LS:-}"
-    exit 0
+    exit "${STUB_SCREEN_LS_RC:-0}"
 fi
 
 exit 0

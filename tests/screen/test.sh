@@ -233,6 +233,123 @@ test_regex_special_name_no_false_positive() {
   teardown_test
 }
 
+test_list_sessions_includes_screen() {
+  setup_test
+  STUB_TMUX_SESSIONS="alpha beta"
+  STUB_SCREEN_LS=$'There are screens on:\n\t12345.gamma\t(Detached)\n1 Socket in /run/screen.\n'
+  out=$("$DOTFILES/bin/screen" -ls 2>&1)
+  assert_contains "$out" "alpha: 1 windows" "tmux session alpha listed"
+  assert_contains "$out" "beta: 1 windows" "tmux session beta listed"
+  assert_contains "$out" "12345.gamma" "screen session gamma listed"
+  alpha_line=$(printf '%s\n' "$out" | grep -n "alpha:" | head -1 | cut -d: -f1)
+  gamma_line=$(printf '%s\n' "$out" | grep -n "12345.gamma" | head -1 | cut -d: -f1)
+  if [[ -n "$alpha_line" && -n "$gamma_line" && "$alpha_line" -lt "$gamma_line" ]]; then
+    printf '  ok tmux output precedes screen output (alpha=%s gamma=%s)\n' "$alpha_line" "$gamma_line"
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL tmux output must precede screen output (alpha=%s gamma=%s)\n' "$alpha_line" "$gamma_line"
+    FAILED=$((FAILED+1))
+  fi
+  teardown_test
+}
+
+test_list_sessions_suppresses_tmux_errors() {
+  setup_test
+  cat > "$TMPDIR_TEST/tmux" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+    list-sessions) echo "no server running on /tmp/tmux-1000/default" >&2; exit 1 ;;
+    *) exit 0 ;;
+esac
+EOF
+  chmod +x "$TMPDIR_TEST/tmux"
+  STUB_SCREEN_LS=$'There are screens on:\n\t12345.gamma\t(Detached)\n'
+  out=$("$DOTFILES/bin/screen" -ls 2>&1)
+  assert_not_contains "$out" "no server running" "tmux 'no server' stderr suppressed"
+  assert_contains "$out" "12345.gamma" "screen sessions still listed"
+  teardown_test
+}
+
+test_list_sessions_screen_missing() {
+  setup_test
+  STUB_TMUX_SESSIONS="alpha"
+  rm -f "$TMPDIR_TEST/screen"
+  out=$("$DOTFILES/bin/screen" -ls 2>&1)
+  assert_contains "$out" "alpha: 1 windows" "tmux session listed when screen is missing"
+  teardown_test
+}
+
+test_list_exits_zero_when_tmux_has_sessions() {
+  setup_test
+  STUB_TMUX_SESSIONS="alpha"
+  STUB_SCREEN_LS="No Sockets found in /run/screen/S-user."$'\n'
+  STUB_SCREEN_LS_RC=1
+  export STUB_SCREEN_LS_RC
+  set +e
+  "$DOTFILES/bin/screen" -ls >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "$rc" "0" "exit 0 when tmux has sessions"
+  unset STUB_SCREEN_LS_RC
+  teardown_test
+}
+
+test_list_exits_zero_when_only_screen_has_sessions() {
+  setup_test
+  cat > "$TMPDIR_TEST/tmux" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+    list-sessions) exit 1 ;;
+    *) exit 0 ;;
+esac
+EOF
+  chmod +x "$TMPDIR_TEST/tmux"
+  STUB_SCREEN_LS=$'There are screens on:\n\t12345.gamma\t(Detached)\n'
+  set +e
+  "$DOTFILES/bin/screen" -ls >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "$rc" "0" "exit 0 when only screen has sessions"
+  teardown_test
+}
+
+test_list_exits_nonzero_when_neither_has_sessions() {
+  setup_test
+  cat > "$TMPDIR_TEST/tmux" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+    list-sessions) exit 1 ;;
+    *) exit 0 ;;
+esac
+EOF
+  chmod +x "$TMPDIR_TEST/tmux"
+  STUB_SCREEN_LS="No Sockets found in /run/screen/S-user."$'\n'
+  STUB_SCREEN_LS_RC=1
+  export STUB_SCREEN_LS_RC
+  set +e
+  "$DOTFILES/bin/screen" -ls >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "$rc" "1" "exit 1 when neither has sessions"
+  unset STUB_SCREEN_LS_RC
+  teardown_test
+}
+
+test_list_exits_nonzero_when_tmux_running_but_empty() {
+  setup_test
+  STUB_TMUX_SESSIONS=""
+  STUB_SCREEN_LS="No Sockets found in /run/screen/S-user."$'\n'
+  STUB_SCREEN_LS_RC=1
+  export STUB_SCREEN_LS_RC
+  set +e
+  "$DOTFILES/bin/screen" -ls >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "$rc" "1" "exit 1 when tmux server is up but empty and screen has no sessions"
+  unset STUB_SCREEN_LS_RC
+  teardown_test
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t

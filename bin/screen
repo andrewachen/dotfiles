@@ -47,6 +47,9 @@ Fallback: if a named-target attach (-r, -x, -d -r, -D -r) finds no matching
 tmux session and /usr/bin/screen lists one, the wrapper hands off to GNU
 screen with the original arguments. Other modes do not fall back.
 
+Listing: -ls / -l / -list emits tmux sessions first, then GNU screen
+sessions (separated by a blank line) when /usr/bin/screen is available.
+
 Use tmux directly for behavior outside this compatibility set.
 EOF
 }
@@ -190,7 +193,20 @@ if [[ $list_sessions == true ]]; then
     if [[ -n $session_name || $attach_requested == true || $detach_requested == true || $force_new == true || ${#positionals[@]} -gt 0 ]]; then
         die "session listing cannot be combined with other screen options"
     fi
-    run_tmux list-sessions
+    require_tmux
+    tmux_out=$("$tmux_bin" list-sessions 2>/dev/null) || true
+    [[ -n $tmux_out ]] && printf '%s\n' "$tmux_out"
+
+    screen_rc=1
+    if [[ -x $screen_bin ]] && ! [[ $screen_bin -ef ${BASH_SOURCE[0]} ]]; then
+        [[ -n $tmux_out ]] && printf '\n'
+        "$screen_bin" -ls 2>/dev/null
+        screen_rc=$?
+    fi
+    if [[ -n $tmux_out ]] || (( screen_rc == 0 )); then
+        exit 0
+    fi
+    exit 1
 fi
 
 if [[ $attach_requested == true ]]; then

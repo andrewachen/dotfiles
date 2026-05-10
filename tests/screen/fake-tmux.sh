@@ -26,4 +26,11 @@ if [[ "${1:-}" == "has-session" ]]; then
     exit 1
 fi
 
+if [[ "${1:-}" == "list-sessions" ]]; then
+    for s in ${STUB_TMUX_SESSIONS:-}; do
+        printf '%s: 1 windows\n' "$s"
+    done
+    exit 0
+fi
+
 exit 0
