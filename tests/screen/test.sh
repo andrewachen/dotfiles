@@ -115,6 +115,19 @@ test_R_does_not_fall_back() {
   teardown_test
 }
 
+test_bare_r_does_not_fall_back() {
+  setup_test
+  STUB_TMUX_SESSIONS=""
+  STUB_SCREEN_LS=$'There are screens on:\n\t12345.foo\t(Detached)\n'
+  "$DOTFILES/bin/screen" -r >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  screen_log=$(cat "$STUB_SCREEN_LOG")
+  assert_contains "$tmux_log" "attach-session" "tmux attach-session (no -t) was invoked"
+  assert_not_contains "$tmux_log" "-t " "tmux attach-session had no -t"
+  assert_eq "$(wc -c < "$STUB_SCREEN_LOG" | tr -d ' ')" "0" "screen log is empty (probe never ran)"
+  teardown_test
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t
