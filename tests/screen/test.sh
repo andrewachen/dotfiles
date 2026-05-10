@@ -212,6 +212,27 @@ EOF
   teardown_test
 }
 
+test_regex_special_name() {
+  setup_test
+  STUB_TMUX_SESSIONS=""
+  STUB_SCREEN_LS=$'There are screens on:\n\t12345.foo.bar\t(Detached)\n'
+  "$DOTFILES/bin/screen" -r "foo.bar" >/dev/null 2>&1 || true
+  screen_log=$(cat "$STUB_SCREEN_LOG")
+  assert_contains "$screen_log" "screen -r foo.bar" "literal-match worked for foo.bar"
+  teardown_test
+}
+
+test_regex_special_name_no_false_positive() {
+  setup_test
+  STUB_TMUX_SESSIONS=""
+  # screen has a session named "fooXbar" — must NOT match query "foo.bar"
+  STUB_SCREEN_LS=$'There are screens on:\n\t12345.fooXbar\t(Detached)\n'
+  "$DOTFILES/bin/screen" -r "foo.bar" >/dev/null 2>&1 || true
+  screen_log=$(cat "$STUB_SCREEN_LOG")
+  assert_not_contains "$screen_log" "screen -r foo.bar" "literal-match did NOT match fooXbar against foo.bar"
+  teardown_test
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t
