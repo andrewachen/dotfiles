@@ -128,6 +128,26 @@ test_bare_r_does_not_fall_back() {
   teardown_test
 }
 
+test_d_r_falls_back() {
+  setup_test
+  STUB_TMUX_SESSIONS=""
+  STUB_SCREEN_LS=$'There are screens on:\n\t12345.foo\t(Detached)\n'
+  "$DOTFILES/bin/screen" -d -r foo >/dev/null 2>&1 || true
+  screen_log=$(cat "$STUB_SCREEN_LOG")
+  assert_contains "$screen_log" "screen -d -r foo" "screen -d -r foo was invoked"
+  teardown_test
+}
+
+test_D_r_falls_back() {
+  setup_test
+  STUB_TMUX_SESSIONS=""
+  STUB_SCREEN_LS=$'There are screens on:\n\t12345.foo\t(Detached)\n'
+  "$DOTFILES/bin/screen" -D -r foo >/dev/null 2>&1 || true
+  screen_log=$(cat "$STUB_SCREEN_LOG")
+  assert_contains "$screen_log" "screen -D -r foo" "screen -D -r foo was invoked"
+  teardown_test
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t
