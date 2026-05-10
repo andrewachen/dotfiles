@@ -75,3 +75,23 @@ done
 ```
 
 Activate the gate in a project by merging the contents of [`.claude/hooks/settings.local.example.json`](.claude/hooks/settings.local.example.json) into that project's `.claude/settings.local.json`. The example uses each hook entry's `if` field (permission-rule syntax) so the scripts only spawn for the gated commands — no overhead on every Bash call.
+
+### Optional: bash behavior-nudge hooks
+
+Two PreToolUse hooks that redirect Bash invocations to the dedicated tool when one would do the same job better:
+
+- `block-git-dash-c.py` — denies `git -C/--git-dir/--work-tree <path-in-cwd>` and `cd <cwd> && git ...`. Both defeat Claude Code's auto-allow matcher for read-only git subcommands and force needless permission prompts.
+- `read-write-edit-block.py` — denies single-file `cat`/`head`/`sed`/`echo` invocations covered by Read/Write/Edit. Skips pipes, multi-file, sed scripts, echo flags (`-n`/`-e`), and other shapes the dedicated tools can't replicate.
+
+Install the scripts:
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+mkdir -p ~/.claude/hooks
+
+for h in block-git-dash-c.py read-write-edit-block.py; do
+  ln -sf "$PWD/.claude/hooks/$h" "$HOME/.claude/hooks/$h"
+done
+```
+
+Activate per-machine by merging entries from [`.claude/settings.git-dash-C-example.json`](.claude/settings.git-dash-C-example.json) and [`.claude/settings.read-write-edit-block-example.json`](.claude/settings.read-write-edit-block-example.json) into `~/.claude/settings.json`. Both examples use narrow `if: Bash(<cmd> *)` matchers so the hooks only run for the relevant commands.
