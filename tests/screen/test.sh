@@ -161,6 +161,16 @@ test_neither_has_session() {
   teardown_test
 }
 
+test_screen_missing() {
+  setup_test
+  STUB_TMUX_SESSIONS=""
+  rm -f "$TMPDIR_TEST/screen"
+  "$DOTFILES/bin/screen" -r foo >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  assert_contains "$tmux_log" "attach-session -t foo" "tmux attach-session was invoked despite missing screen"
+  teardown_test
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t
