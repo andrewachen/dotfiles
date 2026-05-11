@@ -27,8 +27,20 @@ if [[ "${1:-}" == "has-session" ]]; then
 fi
 
 if [[ "${1:-}" == "list-sessions" ]]; then
+    shift
+    fmt=
+    while (($#)); do
+        case "$1" in
+            -F) shift; fmt="${1:-}"; shift ;;
+            *) shift ;;
+        esac
+    done
     for s in ${STUB_TMUX_SESSIONS:-}; do
-        printf '%s: 1 windows\n' "$s"
+        if [[ "$fmt" == "#{session_name}" ]]; then
+            printf '%s\n' "$s"
+        else
+            printf '%s: 1 windows\n' "$s"
+        fi
     done
     exit 0
 fi

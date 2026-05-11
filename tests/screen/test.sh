@@ -233,6 +233,53 @@ test_regex_special_name_no_false_positive() {
   teardown_test
 }
 
+test_prefix_match_falls_back() {
+  setup_test
+  STUB_TMUX_SESSIONS=""
+  STUB_SCREEN_LS=$'There are screens on:\n\t12345.whereuat\t(Detached)\n'
+  "$DOTFILES/bin/screen" -r "whe" >/dev/null 2>&1 || true
+  screen_log=$(cat "$STUB_SCREEN_LOG")
+  assert_contains "$screen_log" "screen -r whe" "prefix 'whe' matched 'whereuat' and handed off to GNU screen"
+  teardown_test
+}
+
+test_non_prefix_substring_does_not_match() {
+  setup_test
+  STUB_TMUX_SESSIONS=""
+  # 'eua' is a substring of 'whereuat' but NOT a prefix — must not match.
+  STUB_SCREEN_LS=$'There are screens on:\n\t12345.whereuat\t(Detached)\n'
+  "$DOTFILES/bin/screen" -r "eua" >/dev/null 2>&1 || true
+  screen_log=$(cat "$STUB_SCREEN_LOG")
+  assert_not_contains "$screen_log" "screen -r eua" "non-prefix substring 'eua' did NOT match 'whereuat'"
+  teardown_test
+}
+
+test_prefix_match_respects_literal_dots() {
+  setup_test
+  STUB_TMUX_SESSIONS=""
+  # Query "foo." is a literal prefix; should match "foo.bar" but not "fooXbar".
+  STUB_SCREEN_LS=$'There are screens on:\n\t12345.foo.bar\t(Detached)\n\t12346.fooXbar\t(Detached)\n'
+  "$DOTFILES/bin/screen" -r "foo." >/dev/null 2>&1 || true
+  screen_log=$(cat "$STUB_SCREEN_LOG")
+  assert_contains "$screen_log" "screen -r foo." "literal prefix 'foo.' matched 'foo.bar'"
+  teardown_test
+}
+
+# Real tmux's `has-session -t <prefix>` returns non-zero for an *ambiguous*
+# prefix as well as for an absent session. If the wrapper treated ambiguity
+# as absence and a GNU screen session happened to share the prefix, we'd
+# silently route the user to GNU screen instead of letting tmux report the
+# ambiguity. Fallback must only fire when tmux has zero prefix matches.
+test_ambiguous_tmux_prefix_does_not_fall_back() {
+  setup_test
+  STUB_TMUX_SESSIONS="whereabouts whereuat"
+  STUB_SCREEN_LS=$'There are screens on:\n\t12345.wheelchair\t(Detached)\n'
+  "$DOTFILES/bin/screen" -r "whe" >/dev/null 2>&1 || true
+  screen_log=$(cat "$STUB_SCREEN_LOG")
+  assert_not_contains "$screen_log" "screen -r whe" "ambiguous tmux prefix did NOT trigger GNU screen fallback"
+  teardown_test
+}
+
 test_list_sessions_includes_screen() {
   setup_test
   STUB_TMUX_SESSIONS="alpha beta"

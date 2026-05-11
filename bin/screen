@@ -44,7 +44,8 @@ In this wrapper, -D detaches other tmux clients without sending SIGHUP/logout.
 Unsupported screen options do not fall back to GNU screen.
 
 Fallback: if a named-target attach (-r, -x, -d -r, -D -r) finds no matching
-tmux session and /usr/bin/screen lists one, the wrapper hands off to GNU
+tmux session and /usr/bin/screen lists one whose name starts with the
+target (prefix match, like screen -r itself), the wrapper hands off to GNU
 screen with the original arguments. Other modes do not fall back.
 
 Listing: -ls / -l / -list emits tmux sessions first, then GNU screen
@@ -245,11 +246,18 @@ if [[ $attach_requested == true ]]; then
         run_tmux new-session
     fi
 
-    if [[ -n $target ]] && ! "$tmux_bin" has-session -t "$target" 2>/dev/null; then
+    # tmux's `has-session -t <prefix>` returns non-zero for both "no match"
+    # and "ambiguous prefix matches multiple sessions", so we can't use it
+    # to gate the GNU screen fallback — an ambiguous tmux prefix would leak
+    # through to screen. Ask tmux for the session names and prefix-match
+    # ourselves; only fall back when tmux has zero candidates.
+    if [[ -n $target ]] && ! { "$tmux_bin" list-sessions -F '#{session_name}' 2>/dev/null || true; } \
+        | awk -v t="$target" 'substr($0, 1, length(t)) == t { found=1 } END { exit !found }'; then
         if [[ -x $screen_bin ]] && ! [[ $screen_bin -ef ${BASH_SOURCE[0]} ]]; then
             if { "$screen_bin" -ls 2>/dev/null || true; } \
                 | awk -v t="$target" '$1 ~ /^[0-9]+\./ {
-                      n = $1; sub(/^[0-9]+\./, "", n); if (n == t) found = 1
+                      n = $1; sub(/^[0-9]+\./, "", n)
+                      if (substr(n, 1, length(t)) == t) found = 1
                   } END { exit !found }'; then
                 exec "$screen_bin" "${original_args[@]}"
             fi
