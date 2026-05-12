@@ -256,6 +256,22 @@ if [[ $rc -ne 0 && -n "$staged" ]]; then
     rm -f "$staged"
 fi
 
+# When invoked from Claude Code, promote the staged file to the session-keyed
+# sentinel ourselves. The companion PostToolUse hook (codex-gate-pass.sh)
+# normally does this by parsing our stderr, but for `run_in_background: true`
+# bash tasks the hook fires on the immediate tool return (with the shell id),
+# before our stderr is captured -- so it sees an empty `staged=` and no-ops.
+# Doing the mv here also runs for foreground; the hook then sees the staged
+# file is gone and exits cleanly.
+if [[ -n "${CLAUDE_CODE_SESSION_ID:-}" && -n "$staged" && -f "$staged" ]]; then
+    if ! mv "$staged" "/tmp/codex-gate-${CLAUDE_CODE_SESSION_ID}-${repo_name}"; then
+        # Don't fail the wrapper -- codex itself succeeded. But surface the
+        # promotion failure so the user isn't surprised by "No codex review
+        # found" on the next push.
+        printf 'codex-review-capture: failed to promote staged file to sentinel\n' >&2
+    fi
+fi
+
 if grep -q '^codex$' "$output"; then
     # Keep only the block after the LAST `^codex$` marker: reset buffer on each
     # match, then print whatever remains at EOF.

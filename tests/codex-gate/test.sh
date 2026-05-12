@@ -58,6 +58,10 @@ setup_repo() {
   # Isolate codex's session-file scan from the user's real ~/.codex/sessions so
   # the wrapper's token-summary lookup only sees files this test produced.
   export CODEX_HOME=$(mktemp -d -t codex-home.XXXXXX)
+  # Isolate the wrapper from the surrounding Claude Code session: tests that
+  # want to exercise the Claude-Code-promotes-its-own-sentinel path set this
+  # explicitly. Others should see the legacy staged-file-only behavior.
+  unset CLAUDE_CODE_SESSION_ID
 }
 
 teardown_repo() {
@@ -523,6 +527,86 @@ test_wrapper_omits_tokens_summary_when_no_session() {
     printf '  ok no tokens line when no session file present\n'
     PASSED=$((PASSED+1))
   fi
+  teardown_repo
+}
+
+test_wrapper_promotes_sentinel_when_claude_session_set() {
+  # When invoked under Claude Code, the wrapper must write the session sentinel
+  # itself: the PostToolUse hook can't see our stderr for background bash tasks
+  # (the bash tool returns immediately with a shell id) so promotion-via-hook
+  # would never fire and the next gated push would block.
+  setup_repo
+  echo "baseline" > foo.txt
+  git add foo.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
+  echo "modified" > foo.txt
+  CLAUDE_CODE_SESSION_ID="sessbg1" "$DOTFILES/bin/codex-review-capture" --uncommitted >/dev/null 2>&1
+  sentinel="/tmp/codex-gate-sessbg1-${REPO_NAME}"
+  assert_file_exists "$sentinel"
+  if [[ -f "$sentinel" ]]; then
+    base=$(sed -n 1p "$sentinel")
+    hash=$(sed -n 2p "$sentinel")
+    expected_base=$(git rev-parse HEAD)
+    expected_hash=$(git diff HEAD | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+    assert_eq "$base" "$expected_base" "promoted sentinel base = HEAD"
+    assert_eq "$hash" "$expected_hash" "promoted sentinel hash = sha256(git diff HEAD)"
+  fi
+  # And the intermediate staged file must be gone — promotion is a move.
+  shopt -s nullglob
+  leaked=( /tmp/codex-gate-staged-${UID}-${REPO_NAME}-* )
+  shopt -u nullglob
+  assert_eq "${#leaked[@]}" "0" "no staged file left after promotion"
+  rm -f "$sentinel"
+  teardown_repo
+}
+
+test_wrapper_no_sentinel_when_session_set_but_codex_fails() {
+  setup_repo
+  echo "x" > x.txt
+  git add x.txt
+  CLAUDE_CODE_SESSION_ID="sessbg2" FAKE_CODEX_RC=42 \
+    "$DOTFILES/bin/codex-review-capture" --uncommitted >/dev/null 2>&1 || true
+  assert_no_file "/tmp/codex-gate-sessbg2-${REPO_NAME}"
+  shopt -s nullglob
+  leaked=( /tmp/codex-gate-staged-${UID}-${REPO_NAME}-* )
+  shopt -u nullglob
+  assert_eq "${#leaked[@]}" "0" "staged file also cleaned up on codex failure"
+  teardown_repo
+}
+
+test_e2e_background_invocation_unblocks_gate_without_hook() {
+  # Simulates the bug scenario: Bash(codex-review-capture ..., run_in_background:
+  # true) returns immediately, PostToolUse fires with empty stderr and no-ops.
+  # The wrapper itself must promote the sentinel so the next gated push passes.
+  setup_repo
+  echo "feature" > feat.txt
+  git add feat.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
+  echo "modified feature" > feat.txt
+  CLAUDE_CODE_SESSION_ID="bgsess" "$DOTFILES/bin/codex-review-capture" --uncommitted >/dev/null 2>&1
+  # Deliberately do NOT invoke codex-gate-pass.sh -- in the real bug it sees no
+  # staged= line and exits 0 with nothing done.
+  gate_input=$(printf '{"session_id":"bgsess","cwd":"%s"}' "$REPO")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate accepts after background-style wrapper promotion"
+  assert_no_file "/tmp/codex-gate-bgsess-${REPO_NAME}"
+  teardown_repo
+}
+
+test_wrapper_no_sentinel_when_session_unset() {
+  # Legacy / terminal-invocation behavior: no promotion happens in the wrapper;
+  # the staged file is left for the PostToolUse hook to handle (or to expire).
+  setup_repo
+  echo "baseline" > foo.txt
+  git add foo.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
+  echo "modified" > foo.txt
+  stderr=$("$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  staged=$(echo "$stderr" | grep -oE 'staged=[^[:space:]]+' | head -n1 | cut -d= -f2-)
+  assert_file_exists "$staged"
+  # No sentinel for any session id we might have used in the wrapper.
+  shopt -s nullglob
+  leaked=( /tmp/codex-gate-*-${REPO_NAME} )
+  shopt -u nullglob
+  assert_eq "${#leaked[@]}" "0" "no sentinel written when CLAUDE_CODE_SESSION_ID unset"
   teardown_repo
 }
 
