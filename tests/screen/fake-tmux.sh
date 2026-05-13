@@ -29,12 +29,17 @@ fi
 if [[ "${1:-}" == "list-sessions" ]]; then
     shift
     fmt=
+    filter=
     while (($#)); do
         case "$1" in
             -F) shift; fmt="${1:-}"; shift ;;
+            -f) shift; filter="${1:-}"; shift ;;
             *) shift ;;
         esac
     done
+    if [[ -n $filter && -n "${STUB_TMUX_LS_FILTER_LOG:-}" ]]; then
+        printf '%s\n' "$filter" >> "$STUB_TMUX_LS_FILTER_LOG"
+    fi
     for s in ${STUB_TMUX_SESSIONS:-}; do
         if [[ "$fmt" == "#{session_name}" ]]; then
             printf '%s\n' "$s"
