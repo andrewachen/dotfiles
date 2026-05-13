@@ -609,6 +609,18 @@ test_bare_x_no_target_keeps_mirror() {
   teardown_test
 }
 
+test_x_named_falls_back_to_gnu_screen() {
+  setup_test
+  STUB_TMUX_SESSIONS=""
+  STUB_SCREEN_LS=$'There are screens on:\n\t12345.foo\t(Detached)\n1 Socket in /run/screen.\n'
+  "$DOTFILES/bin/screen" -x foo >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  screen_log=$(cat "$STUB_SCREEN_LOG")
+  assert_contains "$screen_log" "screen -x foo" "screen -x foo was handed off to GNU screen"
+  assert_not_contains "$tmux_log" "new-session -t foo -s foo-x-" "shadow mode NOT entered when tmux has no NAME"
+  teardown_test
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t
