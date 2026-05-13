@@ -4,16 +4,12 @@
 
 set -euo pipefail
 
-if command -v jq >/dev/null 2>&1; then
-    _stderr_field() { jq -r '.tool_response.stderr // ""'; }
-    _top_field() { jq -r --arg k "$1" --arg d "${2:-}" '.[$k] // $d'; }
-elif command -v python3 >/dev/null 2>&1; then
-    _stderr_field() { python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("tool_response") or {}; print(r.get("stderr",""))'; }
-    _top_field() { python3 -c 'import json,sys; print(json.load(sys.stdin).get(sys.argv[1], sys.argv[2]))' "$1" "${2:-}"; }
-else
-    echo "codex-gate-pass: requires jq or python3 to parse hook input" >&2
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "codex-gate-pass: requires python3 to parse hook input" >&2
     exit 1
 fi
+_stderr_field() { python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("tool_response") or {}; print(r.get("stderr",""))'; }
+_top_field() { python3 -c 'import json,sys; print(json.load(sys.stdin).get(sys.argv[1], sys.argv[2]))' "$1" "${2:-}"; }
 
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | _top_field session_id nosession)

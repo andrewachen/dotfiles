@@ -45,6 +45,10 @@ assert_no_file() {
 }
 
 setup_repo() {
+  # A few tests toggle `set +e ... set -e` to call the gate without aborting
+  # on its expected non-zero exit, but the trailing `set -e` leaks into later
+  # tests. Reset to no-`-e` here so every test starts in a known state.
+  set +e
   REPO=$(mktemp -d -t codex-gate-test.XXXXXX)
   cd "$REPO"
   git init -q
@@ -607,6 +611,586 @@ test_wrapper_no_sentinel_when_session_unset() {
   leaked=( /tmp/codex-gate-*-${REPO_NAME} )
   shopt -u nullglob
   assert_eq "${#leaked[@]}" "0" "no sentinel written when CLAUDE_CODE_SESSION_ID unset"
+  teardown_repo
+}
+
+test_gate_passes_compound_without_push_intent() {
+  # Claude Code's `if: "Bash(<pat>)"` matcher fires every configured hook on
+  # commands it can't parse (while/until/for loops, multi-line forms). The gate
+  # must defend itself by parsing tool_input.command and exiting 0 when no real
+  # push or PR-create appears.
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessA","cwd":"%s","tool_input":{"command":"git tag foo HEAD && git tag --list pat"}}' "$REPO")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate exits 0 on compound git-tag command (no push)"
+  teardown_repo
+}
+
+test_gate_passes_while_loop_without_push_intent() {
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessB","cwd":"%s","tool_input":{"command":"while read sha; do git show $sha; done"}}' "$REPO")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate exits 0 on while-loop git-show command"
+  teardown_repo
+}
+
+test_gate_passes_until_loop_with_gh_run_view() {
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessC","cwd":"%s","tool_input":{"command":"until gh run view 123; do sleep 45; done"}}' "$REPO")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate exits 0 on until-loop gh-run-view (not pr-create)"
+  teardown_repo
+}
+
+test_gate_blocks_when_compound_includes_push() {
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessD","cwd":"%s","tool_input":{"command":"git tag x && git push origin x"}}' "$REPO")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate still blocks when compound command actually pushes"
+  teardown_repo
+}
+
+test_gate_blocks_when_compound_includes_pr_create() {
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessE","cwd":"%s","tool_input":{"command":"git tag x && gh pr create --title foo"}}' "$REPO")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate still blocks when compound command creates a PR"
+  teardown_repo
+}
+
+test_gate_passes_when_push_appears_only_as_substring() {
+  # `git pushd` is not a real command but illustrates: word-boundary matters.
+  # Equally important, `gitpush` (no space) must NOT match.
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessF","cwd":"%s","tool_input":{"command":"echo gitpush-friendly-text"}}' "$REPO")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate does not match 'gitpush' (no whitespace between git and push)"
+  teardown_repo
+}
+
+test_gate_blocks_push_after_comment_line() {
+  # Codex review caught this: when a comment line precedes the real push,
+  # bash strips the comment per-line and runs the push. A flat tokenizer that
+  # treats `#` globally would consume the whole multi-line block as a comment
+  # and let the push slip past. bashlex models bash comment scoping natively.
+  setup_repo
+  cmd='# note about this run\ngit push origin main'
+  gate_input=$(printf '{"session_id":"sessCmt1","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push when a comment line precedes it"
+  teardown_repo
+}
+
+test_gate_passes_comment_with_fake_push_followed_by_tag() {
+  # `# fake ; git push` is entirely a bash comment -- the `;` inside doesn't
+  # terminate anything because the whole line is a comment. The real command
+  # is `git tag x` on the next line. bashlex's per-line comment scoping
+  # ensures we don't over-fire the gate just because comment text mentions
+  # push.
+  setup_repo
+  cmd='# fake ; git push origin main\ngit tag x'
+  gate_input=$(printf '{"session_id":"sessCmt2","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate exits 0 when only a comment mentions push"
+  teardown_repo
+}
+
+test_gate_blocks_push_after_bare_newline() {
+  # Codex review caught this: a multi-line bash input where `git push` follows
+  # an unescaped newline -- which bash treats as a command terminator -- must
+  # still trigger the gate. shlex with whitespace_split absorbs newlines as
+  # whitespace by default, so we have to pre-replace newlines with `; `.
+  setup_repo
+  cmd='git tag x\ngit push origin main'
+  gate_input=$(printf '{"session_id":"sessNL1","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push after bare newline in compound command"
+  teardown_repo
+}
+
+test_gate_blocks_pr_create_after_bare_newline() {
+  setup_repo
+  cmd='git tag x\ngh pr create --title foo'
+  gate_input=$(printf '{"session_id":"sessNL2","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks pr create after bare newline"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_dynamic_option_value() {
+  # Codex review caught: a valued option's value may word-split if dynamic.
+  # `git -C $x origin main` where $x expands to `. push` runs `git -C . push
+  # origin main` -- a real push. We have to fail closed when consuming a
+  # dynamic value, not silently skip it as one token.
+  setup_repo
+  cmd='for x in y; do git -C $x origin main; done'
+  gate_input=$(printf '{"session_id":"sessDynV1","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push when valued-option value is dynamic"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_exec_prefix() {
+  # exec replaces the shell with the named command; `exec git push` runs the
+  # push. Adding `exec` to PASSTHROUGH picks it up via the recursive scan.
+  setup_repo
+  cmd="for x in y; do exec git push origin main; done"
+  gate_input=$(printf '{"session_id":"sessExec1","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push with exec prefix"
+  teardown_repo
+}
+
+test_gate_blocks_push_via_eval_quoted_string() {
+  # eval evaluates its arg(s) as shell. The quoted single-arg form keeps the
+  # push as one word, so PASSTHROUGH adjacency doesn't see it -- need to
+  # join args and parse as bash.
+  setup_repo
+  cmd="for x in y; do eval 'git push origin main'; done"
+  gate_input=$(printf '{"session_id":"sessEval1","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push via eval 'git push ...'"
+  teardown_repo
+}
+
+test_gate_blocks_push_via_eval_unquoted_args() {
+  # `eval git push origin main` has multiple args. eval joins them with
+  # spaces, runs as shell. Same handling -- join and parse.
+  setup_repo
+  cmd="for x in y; do eval git push origin main; done"
+  gate_input=$(printf '{"session_id":"sessEval2","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push via eval with unquoted args"
+  teardown_repo
+}
+
+test_gate_passes_eval_with_non_push_body() {
+  # Negative case: eval with a non-push body must NOT over-fire.
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessEval3","cwd":"%s","tool_input":{"command":"eval '"'"'echo hello'"'"'"}}' "$REPO")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate exits 0 on eval with non-push body"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_env_then_optioned_git() {
+  # Codex review caught: `env git -C ../repo push origin main` after env
+  # passes through to git with global options. Adjacency-only matching on
+  # the rest misses this (no adjacent `git push`). We need to recursively
+  # classify after PASSTHROUGH, not just scan for adjacency.
+  setup_repo
+  cmd="for x in y; do env git -C ../repo push origin main; done"
+  gate_input=$(printf '{"session_id":"sessRec1","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks env-wrapped git push with -C option"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_sudo_then_shell_c() {
+  setup_repo
+  cmd="for x in y; do sudo sh -c 'gh pr create --title foo'; done"
+  gate_input=$(printf '{"session_id":"sessRec2","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks sudo-wrapped shell -c with pr create"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_shell_combined_flags() {
+  # Codex review caught: `bash -lc '...'` has `-c` bundled with `-l`. An
+  # exact `-c` lookup misses this; need to detect any short-flag bundle
+  # containing `c`.
+  setup_repo
+  cmd="for x in y; do bash -lc 'git push origin main'; done"
+  gate_input=$(printf '{"session_id":"sessFlag1","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks bash -lc push (combined flag bundle)"
+  teardown_repo
+}
+
+test_gate_blocks_pr_create_with_shell_ec_flags() {
+  setup_repo
+  cmd="for x in y; do sh -ec 'gh pr create --title x'; done"
+  gate_input=$(printf '{"session_id":"sessFlag2","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks sh -ec pr create (combined flag bundle)"
+  teardown_repo
+}
+
+test_gate_blocks_push_in_process_substitution_redirect() {
+  # Codex review caught: `cat < <(git push)` bash spawns git push as a
+  # process substitution feeding cat's stdin. bashlex stores the inner
+  # command under RedirectNode.output rather than .parts, so we have to
+  # walk redirect targets too.
+  setup_repo
+  cmd='cat < <(git push origin main)'
+  gate_input=$(printf '{"session_id":"sessRedir1","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push hidden in process-substitution redirect"
+  teardown_repo
+}
+
+test_gate_blocks_push_in_command_substitution_redirect_target() {
+  setup_repo
+  cmd=': > $(git push origin main)'
+  gate_input=$(printf '{"session_id":"sessRedir2","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push hidden in redirect-target substitution"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_dynamic_subcommand() {
+  # Codex review caught this: bashlex flattens WordNodes to literal strings,
+  # so `git $SUB origin main` (where $SUB might expand to `push`) compares
+  # the literal '$SUB' against 'push' and reports no intent. We have to
+  # fail closed whenever a dynamic word (parameter, command substitution,
+  # tilde, etc.) sits in the head, option, or subcommand position.
+  setup_repo
+  cmd='for x in push; do git $x origin main; done'
+  gate_input=$(printf '{"session_id":"sessDyn1","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push with dynamic subcommand (for x in push)"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_dynamic_head() {
+  setup_repo
+  cmd='for tool in git; do $tool push origin main; done'
+  gate_input=$(printf '{"session_id":"sessDyn2","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push with dynamic command head"
+  teardown_repo
+}
+
+test_gate_passes_real_push_with_dynamic_arg_after_subcommand() {
+  # `git push $REMOTE` has $REMOTE in arg-position (after the push subcommand).
+  # Since we already know it's a push, the dynamic remote name doesn't change
+  # the intent -- still a push, gate fires. Pinning this to prevent over-
+  # cautious fail-closing in arg positions that don't affect classification.
+  setup_repo
+  cmd='git push $REMOTE main'
+  gate_input=$(printf '{"session_id":"sessDyn3","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks real push with dynamic remote arg"
+  teardown_repo
+}
+
+test_gate_blocks_bash_dash_c_push() {
+  # Codex review caught: `bash -c 'git push origin main'` delegates the push
+  # to a subshell. Without recursive parsing of the -c body, the head is
+  # 'bash' (not git/gh) and the push slips past. Solution: when head is a
+  # shell wrapper with -c, recursively parse the body.
+  setup_repo
+  cmd="for x in y; do bash -c 'git push origin main'; done"
+  gate_input=$(printf '{"session_id":"sessShell1","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push via bash -c body"
+  teardown_repo
+}
+
+test_gate_blocks_sh_dash_c_pr_create() {
+  setup_repo
+  cmd="for x in y; do sh -c 'gh pr create --title foo'; done"
+  gate_input=$(printf '{"session_id":"sessShell2","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks gh pr create via sh -c body"
+  teardown_repo
+}
+
+test_gate_passes_bash_dash_c_non_push() {
+  # A bash -c with no push in the body must still be allowed through.
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessShell3","cwd":"%s","tool_input":{"command":"bash -c '"'"'echo hello world'"'"'"}}' "$REPO")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate exits 0 on bash -c with non-push body"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_env_i_option() {
+  # Codex review caught: env's own options (`-i`, `-u`, ...) sit between `env`
+  # and the wrapped command. After stripping `env`, `-i` ends up as the head
+  # and the parser misses the real push that follows. Each wrapper has its
+  # own option grammar so we don't try to parse them precisely; instead we
+  # switch to loose `git push` / `gh ... pr create` adjacency once a wrapper
+  # is recognized.
+  setup_repo
+  cmd="for x in y; do env -i git push origin main; done"
+  gate_input=$(printf '{"session_id":"sessW1","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push wrapped by env with -i option"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_nice_n_value() {
+  setup_repo
+  cmd="for x in y; do nice -n 5 git push origin main; done"
+  gate_input=$(printf '{"session_id":"sessW2","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push wrapped by nice -n 5"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_sudo_wrapper() {
+  # sudo was acknowledged as a minor gap in a prior review. The loose
+  # adjacency approach makes it trivial to cover -- adding sudo to the
+  # PASSTHROUGH set is enough (no need to parse sudo's option grammar).
+  setup_repo
+  cmd="for x in y; do sudo -u alice git push origin main; done"
+  gate_input=$(printf '{"session_id":"sessW3","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push wrapped by sudo -u user"
+  teardown_repo
+}
+
+test_gate_passes_env_with_non_push() {
+  # The loose adjacency must not over-fire on env-wrapped non-pushes.
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessW4","cwd":"%s","tool_input":{"command":"env -i git tag --list pat"}}' "$REPO")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate exits 0 on env-wrapped non-push git command"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_env_wrapper() {
+  # Codex review caught: `env GIT_SSH_COMMAND=... git push` is a real push that
+  # the intent parser must recognize. Same for `command git push`.
+  setup_repo
+  cmd="for x in y; do env GIT_SSH_COMMAND=ssh git push origin main; done"
+  gate_input=$(printf '{"session_id":"sessEnv1","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push wrapped by env with var assignment"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_command_wrapper() {
+  setup_repo
+  cmd="while true; do command git push origin main; done"
+  gate_input=$(printf '{"session_id":"sessEnv2","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push wrapped by command builtin"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_unknown_global_option() {
+  # Codex review caught: if `skip_options` treats an unknown valued option
+  # like `--hostname VAL` as boolean, it stops at VAL and misses the real
+  # push that follows. Fail-closed on unknown options: the segment falls
+  # through to the gate.
+  setup_repo
+  cmd="for x in y; do gh --hostname ghe.example.com pr create --title foo; done"
+  gate_input=$(printf '{"session_id":"sessUnk1","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks gh pr create with valued option we recognize"
+  teardown_repo
+}
+
+test_gate_passes_quoted_push_in_echo() {
+  # The `git push` substring lives inside a quoted echo argument, not as an
+  # actual command. A naive textual split on `;`/`&&` would mis-segment quoted
+  # content; shlex respects the quotes and yields ["echo", "git push origin"]
+  # as a single argument, so we correctly see no push intent.
+  # The JSON value below must escape the embedded " as \" -- a regular bash
+  # string `echo "git push origin main"` would produce invalid JSON.
+  setup_repo
+  cmd='echo \"git push origin main\"'
+  gate_input=$(printf '{"session_id":"sessQ1","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate exits 0 on echo of quoted git-push string"
+  teardown_repo
+}
+
+test_gate_passes_commit_with_separator_in_message() {
+  # `&&` inside a quoted -m message must not be mis-segmented. A textual splitter
+  # would break the message and the second pseudo-segment "git push'" might be
+  # mistaken for a push command. shlex keeps the message as one token.
+  setup_repo
+  cmd='git commit -m \"fix push && other regressions\"'
+  gate_input=$(printf '{"session_id":"sessQ2","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate exits 0 on commit with && and push inside -m message"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_p_boolean_option() {
+  # The `-p` boolean option (paginate) doesn't take a value. A regex that
+  # greedily consumes the next token as -p's value would miss the real push.
+  # shlex + a whitelist of value-taking options (which -p is NOT in) handles
+  # this correctly.
+  setup_repo
+  cmd="for x in y; do git -p push origin main; done"
+  gate_input=$(printf '{"session_id":"sessQ3","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push with boolean -p global option"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_git_c_option() {
+  # Codex review caught this: a real push that includes git-level options
+  # between `git` and `push` (e.g., gh internally uses `git -c
+  # credential.helper=...`) would slip past a strict `git[[:space:]]+push`
+  # regex and false-allow when wrapped in an unparseable container (loop,
+  # multi-line). The matcher fires the hook for the container; the hook must
+  # still recognize the push inside.
+  setup_repo
+  cmd="for x in y; do git -c protocol.version=2 push origin main; done"
+  gate_input=$(printf '{"session_id":"sessOpt1","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push with -c k=v global option"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_no_pager_option() {
+  setup_repo
+  cmd="while true; do git --no-pager push origin main; done"
+  gate_input=$(printf '{"session_id":"sessOpt2","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push with --no-pager global option"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_multiple_c_options() {
+  setup_repo
+  cmd="for x in y; do git -c http.proxy=p -c init.defaultBranch=main push origin main; done"
+  gate_input=$(printf '{"session_id":"sessOpt3","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks push with multiple -c options"
+  teardown_repo
+}
+
+test_gate_blocks_pr_create_with_gh_global_option() {
+  setup_repo
+  cmd="for x in y; do gh -R foo/bar pr create --title x; done"
+  gate_input=$(printf '{"session_id":"sessOpt4","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks gh pr create with -R global option"
+  teardown_repo
+}
+
+test_gate_blocks_line_continued_push() {
+  # Codex review caught this: a real `git push` written as
+  #   git \
+  #     push origin main
+  # is still a push to bash, but the raw command string the hook sees has
+  # backslash-newline between `git` and `push`, defeating the word-boundary
+  # regex. Without normalization the gate would exit 0 and let an unreviewed
+  # push through -- a false-allow on the gate's safety property.
+  # The literal sequence `\\\n` in the cmd arg becomes JSON `\\\n`, which jq
+  # decodes to backslash + newline -- the on-disk form of a line continuation.
+  setup_repo
+  cmd='git \\\npush origin main'
+  gate_input=$(printf '{"session_id":"sessLC1","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks line-continued git push"
+  teardown_repo
+}
+
+test_gate_blocks_line_continued_pr_create_between_pr_and_create() {
+  setup_repo
+  cmd='gh pr \\\ncreate --title foo'
+  gate_input=$(printf '{"session_id":"sessLC2","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks line-continued gh pr create (between pr and create)"
+  teardown_repo
+}
+
+test_gate_blocks_line_continued_compound_push() {
+  setup_repo
+  cmd='git tag x \\\n&& git push origin x'
+  gate_input=$(printf '{"session_id":"sessLC3","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  assert_eq "$rc" "2" "gate blocks line-continued compound that ends in push"
+  teardown_repo
+}
+
+test_gate_falls_through_when_tool_command_absent() {
+  # Legacy / test inputs without tool_input.command must keep the previous
+  # behavior: full sentinel check. With no sentinel present, the gate blocks.
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessG","cwd":"%s"}' "$REPO")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate falls through to full check when tool_input.command absent"
   teardown_repo
 }
 
