@@ -497,6 +497,65 @@ test_x_named_trap_kills_shadow() {
   teardown_test
 }
 
+test_x_named_prunes_dead_orphan_shadow() {
+  setup_test
+  # PID 1 is always alive (init); pick a large PID that's almost certainly dead.
+  dead_pid=2147483646
+  STUB_TMUX_SESSIONS="foo:foo foo-x-${dead_pid}:foo"
+  STUB_SCREEN_LS=""
+  "$DOTFILES/bin/screen" -x foo >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  assert_contains "$tmux_log" "kill-session -t foo-x-${dead_pid}" "orphan shadow with dead PID was pruned"
+  teardown_test
+}
+
+test_x_named_leaves_live_pid_shadow_alone() {
+  setup_test
+  # Use our own PID — guaranteed alive for the duration of this test.
+  live_pid=$$
+  STUB_TMUX_SESSIONS="foo:foo foo-x-${live_pid}:foo"
+  STUB_SCREEN_LS=""
+  "$DOTFILES/bin/screen" -x foo >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  # End-anchored line match. Substring matching would false-positive if the
+  # wrapper's own EXIT-trap kill logged foo-x-<wrapper_pid> where wrapper_pid
+  # happens to start with live_pid's digits.
+  if grep -qE "kill-session -t foo-x-${live_pid}\$" <<< "$tmux_log"; then
+    printf '  FAIL %s\n    log:\n%s\n' "shadow with live PID was NOT pruned" "$tmux_log"
+    FAILED=$((FAILED+1))
+  else
+    printf '  ok %s\n' "shadow with live PID was NOT pruned"
+    PASSED=$((PASSED+1))
+  fi
+  teardown_test
+}
+
+test_x_named_ignores_unrelated_session_names() {
+  setup_test
+  # Three "leave alone" cases:
+  # - foo-bar: no -x-<digits> suffix; rejected by name pattern.
+  # - foobar-x-99: shadow of foobar, not foo; rejected by name pattern
+  #   (doesn't start with foo-x-).
+  # - foo-x-2147483646: name pattern matches foo's shadows AND embedded PID
+  #   is definitely dead (well above any pid_max). The ONLY thing protecting
+  #   it from pruning is session_group=bar ≠ foo. This is the case that
+  #   actually exercises the orphan-prune group check.
+  STUB_TMUX_SESSIONS="foo:foo foo-bar foobar:foobar foobar-x-99:foobar foo-x-2147483646:bar"
+  STUB_SCREEN_LS=""
+  "$DOTFILES/bin/screen" -x foo >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  assert_not_contains "$tmux_log" "kill-session -t foo-bar" "non-shadow sibling left alone"
+  assert_not_contains "$tmux_log" "kill-session -t foobar-x-99" "different-target shadow left alone (name pattern mismatch)"
+  if grep -qE "kill-session -t foo-x-2147483646\$" <<< "$tmux_log"; then
+    printf '  FAIL %s\n    log:\n%s\n' "same-pattern shadow in different group left alone" "$tmux_log"
+    FAILED=$((FAILED+1))
+  else
+    printf '  ok %s\n' "same-pattern shadow in different group left alone"
+    PASSED=$((PASSED+1))
+  fi
+  teardown_test
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t
