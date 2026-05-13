@@ -85,8 +85,172 @@ fi
 output=$(mktemp -t codex-review.XXXXXXXX)
 printf 'codex-review-capture: full transcript -> %s\n' "$output" >&2
 
+# Touched before `codex review` so the post-run session-file scan can prune to
+# files this invocation could have produced. `find -newer <ref>` is portable to
+# BSD/macOS; `-newermt "@<epoch>"` is not (the @epoch time syntax is GNU-only).
+review_marker=$(mktemp -t codex-review-start.XXXXXXXX)
+
 codex review "$@" >"$output" 2>&1
 rc=$?
+
+# Insert thousands separators into a non-negative integer string.
+commafy() {
+    local n="$1" r=""
+    while ((${#n} > 3)); do
+        r=",${n: -3}$r"
+        n="${n:0:${#n}-3}"
+    done
+    printf '%s%s' "$n" "$r"
+}
+
+# OpenAI standard-tier prices per 1M tokens: "<short_in> <short_cached> <short_out> <long_in> <long_cached> <long_out>".
+# Short tier applies when a turn's input < SHORT_CONTEXT_THRESHOLD; long otherwise. Cost is summed per-turn.
+# Unmapped models drop cost entirely (token counts still reported).
+SHORT_CONTEXT_THRESHOLD=272000
+price_table() {
+    case "$1" in
+        gpt-5.5) echo "5 0.5 30 10 1 45" ;;
+        gpt-5.4) echo "2.5 0.25 15 5 0.5 22.5" ;;
+    esac
+}
+
+# Surface codex's own token-usage event so callers can report run cost.
+# `codex review` persists `token_count` events to a session JSONL under
+# ${CODEX_HOME:-$HOME/.codex}/sessions/YYYY/MM/DD/rollout-*.jsonl. The session id
+# printed in codex's stdout transcript is the parent orchestrator's id, not the
+# id of the persisted sub-agent session — so we locate the right file by:
+# (a) mtime newer than review_marker, (b) session_meta source.subagent=="review",
+# (c) session_meta cwd matches $PWD. If multiple match, pick the newest by
+# session_meta.timestamp (concurrent same-cwd runs may swap reports — acceptable).
+# Python (the codex-gate hooks' canonical JSON parser) handles all parsing in
+# one pass; failures are non-fatal so review output is unaffected.
+report_token_usage() {
+    command -v python3 >/dev/null 2>&1 || return 0
+    local sessions_root="${CODEX_HOME:-$HOME/.codex}/sessions"
+    [[ -d "$sessions_root" ]] || return 0
+    [[ -e "$review_marker" ]] || return 0
+
+    local candidates=()
+    while IFS= read -r -d '' candidate; do
+        candidates+=("$candidate")
+    done < <(find "$sessions_root" -type f -name '*.jsonl' -newer "$review_marker" -print0 2>/dev/null)
+    [[ ${#candidates[@]} -gt 0 ]] || return 0
+
+    # Single python pass: pick the matching session file, then emit:
+    #   line 1: model (possibly empty)
+    #   line 2: <input> <cached> <output> <reasoning> <total>   (cumulative final)
+    #   line N: <input> <cached> <output>   (per-event cumulative for cost deltas)
+    # Empty output means "no matching session file or no usable token_count events".
+    local extracted
+    extracted=$(python3 - "$PWD" "${candidates[@]}" 2>/dev/null <<'PYEOF'
+import json, sys
+target_cwd = sys.argv[1]
+best_path, best_ts = None, ""
+# `codex review` writes two session files per invocation: the orchestrator
+# (source == "exec", a bare string) and the review sub-agent (source ==
+# {"subagent": "review"}, a dict). We want the latter — `isinstance` keeps the
+# loop alive when iterating past the orchestrator's differently-shaped meta.
+for path in sys.argv[2:]:
+    try:
+        with open(path, encoding="utf-8") as f:
+            ev = json.loads(f.readline())
+        p = ev.get("payload") if isinstance(ev, dict) else None
+        if not isinstance(p, dict) or ev.get("type") != "session_meta":
+            continue
+        src = p.get("source")
+        if not isinstance(src, dict) or src.get("subagent") != "review":
+            continue
+        if p.get("cwd") != target_cwd:
+            continue
+        ts = p.get("timestamp", "")
+        if best_path is None or ts > best_ts:
+            best_path, best_ts = path, ts
+    except (OSError, ValueError, AttributeError, TypeError):
+        continue
+if best_path is None:
+    sys.exit(0)
+model, final_total, rows = "", None, []
+fields = ("input_tokens", "cached_input_tokens", "output_tokens",
+          "reasoning_output_tokens", "total_tokens")
+with open(best_path, encoding="utf-8") as f:
+    for line in f:
+        try:
+            ev = json.loads(line)
+            t = ev.get("type") if isinstance(ev, dict) else None
+            p = ev.get("payload") if isinstance(ev, dict) else None
+            if not isinstance(p, dict):
+                continue
+            if t == "turn_context" and not model:
+                m = p.get("model")
+                if isinstance(m, str) and m:
+                    model = m
+            elif t == "event_msg" and p.get("type") == "token_count":
+                info = p.get("info")
+                tot = info.get("total_token_usage") if isinstance(info, dict) else None
+                if not isinstance(tot, dict):
+                    continue
+                vals = [tot.get(k) for k in fields]
+                if any(not isinstance(v, int) for v in vals):
+                    continue
+                final_total = vals
+                rows.append((vals[0], vals[1], vals[2]))
+        except (ValueError, AttributeError, TypeError):
+            continue
+print(model)
+if final_total is not None:
+    print(" ".join(str(v) for v in final_total))
+    for r in rows:
+        print(" ".join(str(v) for v in r))
+PYEOF
+    )
+    [[ -n "$extracted" ]] || return 0
+
+    local model final_total_line
+    { IFS= read -r model
+      IFS= read -r final_total_line || true
+    } <<<"$extracted"
+    [[ -n "$final_total_line" ]] || return 0
+
+    local in_t ca_t ou_t re_t to_t
+    read -r in_t ca_t ou_t re_t to_t <<<"$final_total_line"
+
+    local summary
+    summary="input=$(commafy "$in_t") cached=$(commafy "$ca_t") output=$(commafy "$ou_t") reasoning=$(commafy "$re_t") total=$(commafy "$to_t")"
+
+    # Cost is per-turn tiered: each row's delta of `total_token_usage` is a
+    # per-turn snapshot, and its delta-input decides short/long-context tier.
+    # Deltas naturally absorb the duplicate token_count events that real codex
+    # emits per turn — a duplicate row delta is (0,0,0), contributing $0.
+    local rates
+    rates=$(price_table "$model")
+    if [[ -n "$rates" ]]; then
+        # Variable names si/sc/so/li/lc/lo avoid gawk builtin clashes (sin, or, etc.).
+        local si sc so li lc lo
+        read -r si sc so li lc lo <<<"$rates"
+        # Drop the first two lines (model, final cumulative) — the rest are
+        # per-event cumulative rows for delta-based cost calculation.
+        local rows
+        rows=$(printf '%s\n' "$extracted" | tail -n +3)
+        if [[ -n "$rows" ]]; then
+            local cost
+            cost=$(printf '%s\n' "$rows" | awk \
+                -v si="$si" -v sc="$sc" -v so="$so" \
+                -v li="$li" -v lc="$lc" -v lo="$lo" \
+                -v thr="$SHORT_CONTEXT_THRESHOLD" '
+                { di = $1 - pi; dc = $2 - pc; doo = $3 - po
+                  if (di+0 >= thr) cost += (di - dc) * li + dc * lc + doo * lo
+                  else             cost += (di - dc) * si + dc * sc + doo * so
+                  pi = $1; pc = $2; po = $3 }
+                END { printf "%.4f", cost / 1000000 }')
+            summary+=" cost=\$$cost"
+        fi
+    fi
+    [[ -n "$model" ]] && summary+=" model=$model"
+
+    printf 'codex-review-capture: tokens %s\n' "$summary" >&2
+}
+report_token_usage
+rm -f "$review_marker"
 
 if [[ $rc -ne 0 && -n "$staged" ]]; then
     rm -f "$staged"

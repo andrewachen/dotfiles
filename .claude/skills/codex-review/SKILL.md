@@ -44,6 +44,14 @@ When the background task completes, read its stdout — that's Codex's verdict o
 
 If you need the full Codex transcript, the path is in the task's stderr (`codex-review-capture: full transcript -> ...`).
 
+The wrapper also extracts the Codex session's final `token_count` event and emits a line on stderr like:
+
+```
+codex-review-capture: tokens input=N cached=N output=N reasoning=N total=N cost=$N.NNNN model=gpt-5.5
+```
+
+Pass that line through verbatim in your report. The `cost=` and `model=` fields may be absent — if so, just report what's there. If the whole line is missing, say so; don't fabricate numbers.
+
 ## Review modes
 
 Pass whatever flags you would pass to `codex review` directly. The wrapper forwards `"$@"` verbatim.

@@ -55,6 +55,9 @@ setup_repo() {
   ln -sf "$HARNESS_DIR/fake-codex.sh" "$HARNESS_BIN/codex"
   export PATH="$HARNESS_BIN:$PATH"
   export FAKE_CODEX_RC=0
+  # Isolate codex's session-file scan from the user's real ~/.codex/sessions so
+  # the wrapper's token-summary lookup only sees files this test produced.
+  export CODEX_HOME=$(mktemp -d -t codex-home.XXXXXX)
 }
 
 teardown_repo() {
@@ -63,6 +66,8 @@ teardown_repo() {
   rm -f "/tmp/codex-gate-staged-${UID}-${REPO_NAME}-"* 2>/dev/null
   rm -f "/tmp/codex-gate-"*"-${REPO_NAME}" 2>/dev/null
   [[ -n "${HARNESS_BIN:-}" ]] && rm -rf "$HARNESS_BIN"
+  [[ -n "${CODEX_HOME:-}" ]] && rm -rf "$CODEX_HOME"
+  unset CODEX_HOME FAKE_CODEX_TOKENS FAKE_CODEX_MODEL FAKE_CODEX_TURN1_TOTAL
 }
 
 # Tests appended below
@@ -337,6 +342,187 @@ test_gate_blocks_on_malformed_sentinel() {
     FAILED=$((FAILED+1))
   fi
   rm -f "/tmp/codex-gate-malformedsess-${REPO_NAME}"
+  teardown_repo
+}
+
+test_wrapper_emits_tokens_summary_from_session() {
+  setup_repo
+  echo "x" > x.txt
+  git add x.txt
+  stderr=$(FAKE_CODEX_TOKENS="100 50 200 30 330" "$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  expected='codex-review-capture: tokens input=100 cached=50 output=200 reasoning=30 total=330'
+  if echo "$stderr" | grep -qF "$expected"; then
+    printf '  ok tokens summary present in stderr\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL no tokens summary in stderr; expected:\n    %s\n  got stderr:\n%s\n' "$expected" "$stderr"
+    FAILED=$((FAILED+1))
+  fi
+  teardown_repo
+}
+
+test_wrapper_appends_cost_for_gpt_5_5() {
+  # gpt-5.5 standard pricing per 1M: input $5, cached $0.5, output $30.
+  # Math: non-cached = 1000 - 400 = 600.
+  # cost = (600*5 + 400*0.5 + 200*30) / 1_000_000 = 9200 / 1_000_000 = $0.0092
+  setup_repo
+  echo "x" > x.txt
+  git add x.txt
+  stderr=$(FAKE_CODEX_TOKENS="1000 400 200 50 1200" FAKE_CODEX_MODEL="gpt-5.5" "$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  expected='codex-review-capture: tokens input=1,000 cached=400 output=200 reasoning=50 total=1,200 cost=$0.0092 model=gpt-5.5'
+  if echo "$stderr" | grep -qF "$expected"; then
+    printf '  ok cost line correct for gpt-5.5\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL expected:\n    %s\n  got stderr:\n%s\n' "$expected" "$stderr"
+    FAILED=$((FAILED+1))
+  fi
+  teardown_repo
+}
+
+test_wrapper_appends_cost_for_gpt_5_4() {
+  # gpt-5.4 standard pricing per 1M: input $2.5, cached $0.25, output $15.
+  # cost = (600*2.5 + 400*0.25 + 200*15) / 1_000_000 = 4600 / 1_000_000 = $0.0046
+  setup_repo
+  echo "x" > x.txt
+  git add x.txt
+  stderr=$(FAKE_CODEX_TOKENS="1000 400 200 50 1200" FAKE_CODEX_MODEL="gpt-5.4" "$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  expected='codex-review-capture: tokens input=1,000 cached=400 output=200 reasoning=50 total=1,200 cost=$0.0046 model=gpt-5.4'
+  if echo "$stderr" | grep -qF "$expected"; then
+    printf '  ok cost line correct for gpt-5.4\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL expected:\n    %s\n  got stderr:\n%s\n' "$expected" "$stderr"
+    FAILED=$((FAILED+1))
+  fi
+  teardown_repo
+}
+
+test_wrapper_tolerates_orchestrator_session_in_candidates() {
+  # Real `codex review` emits TWO session files: an orchestrator with
+  # source=="exec" (a string) and a review sub-agent with source=={...}.
+  # If the wrapper's candidate-scan trips on the orchestrator's shape, the
+  # sub-agent is never inspected and the tokens line goes missing.
+  setup_repo
+  decoy_dir="$CODEX_HOME/sessions/$(date -u +%Y/%m/%d)"
+  mkdir -p "$decoy_dir"
+  printf '{"type":"session_meta","payload":{"source":"exec","cwd":"%s","timestamp":"2026-01-01T00:00:00Z"}}\n' "$REPO" \
+    > "$decoy_dir/rollout-orchestrator.jsonl"
+  echo "x" > x.txt
+  git add x.txt
+  stderr=$(FAKE_CODEX_TOKENS="1000 400 200 50 1200" \
+           FAKE_CODEX_MODEL="gpt-5.5" \
+           "$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  expected='codex-review-capture: tokens input=1,000 cached=400 output=200 reasoning=50 total=1,200 cost=$0.0092 model=gpt-5.5'
+  if echo "$stderr" | grep -qF "$expected"; then
+    printf '  ok orchestrator-style decoy does not break sub-agent extraction\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL expected:\n    %s\n  got stderr:\n%s\n' "$expected" "$stderr"
+    FAILED=$((FAILED+1))
+  fi
+  teardown_repo
+}
+
+test_wrapper_sums_mixed_tier_costs_per_turn() {
+  # Turn 1: delta=(50k, 10k, 1k) — short. cost = 40k*5 + 10k*0.5 + 1k*30 = 235,000
+  # Turn 2: delta=(300k, 100k, 500) — long.  cost = 200k*10 + 100k*1 + 500*45 = 2,122,500
+  # Total: 2,357,500 / 1M = $2.3575. This protects the per-turn tier decision —
+  # a regression that decided tier once from the final turn would mis-bill.
+  setup_repo
+  echo "x" > x.txt
+  git add x.txt
+  stderr=$(FAKE_CODEX_TURN1_TOTAL="50000 10000 1000 100 51000" \
+           FAKE_CODEX_TOKENS="350000 110000 1500 150 351500" \
+           FAKE_CODEX_MODEL="gpt-5.5" \
+           "$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  expected='codex-review-capture: tokens input=350,000 cached=110,000 output=1,500 reasoning=150 total=351,500 cost=$2.3575 model=gpt-5.5'
+  if echo "$stderr" | grep -qF "$expected"; then
+    printf '  ok mixed-tier cost summed per turn\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL expected:\n    %s\n  got stderr:\n%s\n' "$expected" "$stderr"
+    FAILED=$((FAILED+1))
+  fi
+  teardown_repo
+}
+
+test_wrapper_handles_duplicate_token_count_events() {
+  # Real codex emits each token_count snapshot twice per turn. With delta-based
+  # billing, the second occurrence telescopes to delta=(0,0,0) and contributes
+  # nothing. Set turn-1 cumulative == final cumulative to simulate the duplicate
+  # pattern; cost should still be the single-turn amount, not 2x.
+  setup_repo
+  echo "x" > x.txt
+  git add x.txt
+  stderr=$(FAKE_CODEX_TURN1_TOTAL="1000 400 200 50 1200" \
+           FAKE_CODEX_TOKENS="1000 400 200 50 1200" \
+           FAKE_CODEX_MODEL="gpt-5.5" \
+           "$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  expected='codex-review-capture: tokens input=1,000 cached=400 output=200 reasoning=50 total=1,200 cost=$0.0092 model=gpt-5.5'
+  if echo "$stderr" | grep -qF "$expected"; then
+    printf '  ok duplicate events do not inflate cost\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL expected:\n    %s\n  got stderr:\n%s\n' "$expected" "$stderr"
+    FAILED=$((FAILED+1))
+  fi
+  teardown_repo
+}
+
+test_wrapper_uses_long_context_rates_when_turn_exceeds_threshold() {
+  # Per-turn input 300K >= 272K threshold: long-context rates for gpt-5.5 ($10 / $1 / $45 per 1M).
+  # cost = (300000-100000)*10 + 100000*1 + 1000*45 = 2,145,000 / 1M = $2.1450
+  setup_repo
+  echo "x" > x.txt
+  git add x.txt
+  stderr=$(FAKE_CODEX_TOKENS="300000 100000 1000 200 301000" FAKE_CODEX_MODEL="gpt-5.5" "$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  expected='codex-review-capture: tokens input=300,000 cached=100,000 output=1,000 reasoning=200 total=301,000 cost=$2.1450 model=gpt-5.5'
+  if echo "$stderr" | grep -qF "$expected"; then
+    printf '  ok long-context: cost computed at long-tier rates\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL expected:\n    %s\n  got stderr:\n%s\n' "$expected" "$stderr"
+    FAILED=$((FAILED+1))
+  fi
+  teardown_repo
+}
+
+test_wrapper_omits_cost_for_unknown_model() {
+  setup_repo
+  echo "x" > x.txt
+  git add x.txt
+  stderr=$(FAKE_CODEX_TOKENS="1000 400 200 50 1200" FAKE_CODEX_MODEL="gpt-5.5-pro" "$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  expected='codex-review-capture: tokens input=1,000 cached=400 output=200 reasoning=50 total=1,200 model=gpt-5.5-pro'
+  if echo "$stderr" | grep -qF "$expected"; then
+    printf '  ok unknown model: model shown, cost omitted\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL expected:\n    %s\n  got stderr:\n%s\n' "$expected" "$stderr"
+    FAILED=$((FAILED+1))
+  fi
+  if echo "$stderr" | grep -qE '^codex-review-capture: tokens .* cost='; then
+    printf '  FAIL cost= appeared for unknown model\n'
+    FAILED=$((FAILED+1))
+  else
+    printf '  ok no cost= for unknown model\n'
+    PASSED=$((PASSED+1))
+  fi
+  teardown_repo
+}
+
+test_wrapper_omits_tokens_summary_when_no_session() {
+  setup_repo
+  echo "x" > x.txt
+  git add x.txt
+  stderr=$("$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  if echo "$stderr" | grep -qE '^codex-review-capture: tokens '; then
+    printf '  FAIL unexpected tokens line in stderr:\n%s\n' "$stderr"
+    FAILED=$((FAILED+1))
+  else
+    printf '  ok no tokens line when no session file present\n'
+    PASSED=$((PASSED+1))
+  fi
   teardown_repo
 }
 
