@@ -64,9 +64,9 @@ DENY_CASES = [
     # echo ... > <file> -> Write ;  echo ... >> <file> -> Edit
     ("echo redirect",                "echo hello > foo.txt"),
     ("echo redirect quoted",         'echo "hi there" > foo.txt'),
-    ("echo redirect var",            "echo $X > foo.txt"),
     ("echo append",                  "echo hello >> foo.txt"),
     ("echo append quoted",           'echo "line two" >> foo.txt'),
+    ("echo explicit fd1 redirect",   "echo hello 1> out"),
 
     # Quote-aware splitter: separators inside quoted strings stay in the
     # argument; the outer command still matches a clean replacement.
@@ -88,6 +88,26 @@ ALLOW_CASES = [
     ("cat stdin",                    "cat - < foo.txt"),
     ("cat command sub",              "cat $(printf foo)"),
     ("cat backtick",                 "cat `printf foo`"),
+
+    # Parameter expansions can't be replicated by Read/Write (the tool needs
+    # a literal path / literal content), so they no longer get misdirected.
+    ("cat parameter",                "cat $foo"),
+    ("cat braced parameter",         "cat ${VAR}"),
+    ("echo redirect var",            "echo $X > foo.txt"),
+    ("echo redirect quoted var",     'echo "$X" > foo.txt'),
+    ("echo redirect mixed var",      'echo "hello $X" > foo.txt'),
+    ("echo redirect cmdsub",         "echo $(cmd) > foo.txt"),
+    ("head parameter",               "head $file"),
+    ("sed -n parameter file",        "sed -n '5p' $file"),
+    # Non-stdout fd redirects: Write only writes echo's stdout, so an explicit
+    # fd 2 / fd N / &> destination is not a clean Write/Edit case.
+    ("echo redirect to stderr",      "echo hello 2> err"),
+    ("echo redirect to fd10",        "echo hello 10> log"),
+    ("echo redirect both",           "echo hello &> out"),
+    # Command substitution with internal `;`: the inner separator must stay
+    # inside the substitution. (Today this is allowed by an accident of the
+    # custom splitter mis-splitting; bashlex makes it principled.)
+    ("cat cmdsub internal semicolon", "cat $(echo a;b)"),
 
     # head: multi-file, byte count, follow, pipe — no clean Read mapping.
     ("head multi-file",              "head a.txt b.txt"),

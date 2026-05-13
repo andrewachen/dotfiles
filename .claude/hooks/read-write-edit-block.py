@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["bashlex"]
+# ///
 # ABOUTME: PreToolUse Bash hook denying single-file cat/head/sed/echo invocations
 # ABOUTME: when Read/Write/Edit covers the case; skips pipes, multi-file, scripts.
 
@@ -6,6 +10,9 @@ import json
 import re
 import shlex
 import sys
+
+import bashlex
+import bashlex.errors
 
 HOOK_EVENT = "PreToolUse"
 
@@ -32,88 +39,84 @@ def deny(reason: str) -> None:
     sys.exit(0)
 
 
-def is_filename_arg(s: str) -> bool:
-    """Reject tokens that are obviously not a literal file path.
-
-    shlex preserves shell metacharacters that aren't quoted, so a token
-    starting with one of these means the segment is doing something the
-    dedicated tools can't replicate (heredoc, command sub, subshell, etc.).
+def has_only_path_parts(word_node) -> bool:
+    """True if the word can be treated as a literal path argument. Tilde sub-
+    parts are accepted because Read/Write/Edit handle `~` expansion; any other
+    sub-part (parameter, command substitution, process substitution) means the
+    tool can't replicate the path bash would resolve.
     """
-    if not s:
-        return False
-    if s[0] in "<>|()&;`":
-        return False
-    if s.startswith("$("):
-        return False
-    return True
+    parts = getattr(word_node, "parts", []) or []
+    return all(p.kind == "tilde" for p in parts)
 
 
-def split_segments(cmd: str) -> list[str]:
-    """Split on shell-level separators (`;`, newline, `&&`, `||`), respecting
-    single/double quotes and backslash escapes so that quoted separators stay
-    inside their argument (e.g. `echo 'a;b' > f` is one segment, not two).
+def has_only_literal_parts(word_node) -> bool:
+    """True if the word is a pure literal — no expansions of any kind. Used
+    for echo content, where bash expands tilde and `$X` before echo sees them,
+    so a literal Write call could not reproduce the same bytes.
     """
-    segments: list[str] = []
-    buf: list[str] = []
-    quote: str | None = None
-    i, n = 0, len(cmd)
-    while i < n:
-        c = cmd[i]
-        if quote == "'":
-            buf.append(c)
-            if c == "'":
-                quote = None
-            i += 1
-            continue
-        if quote == '"':
-            buf.append(c)
-            if c == "\\" and i + 1 < n:
-                buf.append(cmd[i + 1])
-                i += 2
+    return not (getattr(word_node, "parts", []) or [])
+
+
+def word_text(word_node) -> str:
+    return getattr(word_node, "word", "") or ""
+
+
+def iter_simple_commands(node):
+    """Yield each `command` node that's a candidate for blocking.
+
+    A command is a candidate if it sits at the top of a list or alone; commands
+    inside pipelines, compound statements (for/while/if/case), function
+    definitions, and command substitutions are skipped because either the user
+    is composing (pipe) or the construct isn't a plain single-file invocation.
+    """
+    kind = node.kind
+    if kind == "command":
+        yield node
+        return
+    if kind == "list":
+        for part in node.parts:
+            if part.kind == "operator":
                 continue
-            if c == '"':
-                quote = None
-            i += 1
-            continue
-        if c == "\\" and i + 1 < n:
-            buf.append(c)
-            buf.append(cmd[i + 1])
-            i += 2
-            continue
-        if c == "'" or c == '"':
-            quote = c
-            buf.append(c)
-            i += 1
-            continue
-        if c == ";" or c == "\n":
-            seg = "".join(buf).strip()
-            if seg:
-                segments.append(seg)
-            buf = []
-            i += 1
-            continue
-        if i + 1 < n and cmd[i:i + 2] in ("&&", "||"):
-            seg = "".join(buf).strip()
-            if seg:
-                segments.append(seg)
-            buf = []
-            i += 2
-            continue
-        buf.append(c)
-        i += 1
-    seg = "".join(buf).strip()
-    if seg:
-        segments.append(seg)
-    return segments
+            yield from iter_simple_commands(part)
 
 
-def check_cat(args: list[str]) -> str | None:
-    # Only `cat <single-file>` -- no flags, no pipes, no redirects.
+def split_command(cmd_node):
+    """Return (head_text, arg_words, redirects). Returns (None, [], []) if the
+    command has no head word (e.g. assignment-only commands like `X=$(cmd)`)
+    or has any leading assignment (env-prefix like `FOO=bar echo hi > out`).
+    Env-prefixed commands sometimes care about the prefix and sometimes don't;
+    the hook can't tell, so we preserve the existing "allow through" behavior
+    by refusing to inspect any assignment-prefixed command.
+    """
+    words: list = []
+    redirects: list = []
+    for part in cmd_node.parts:
+        if part.kind == "assignment":
+            return None, [], []
+        if part.kind == "word":
+            words.append(part)
+        elif part.kind == "redirect":
+            redirects.append(part)
+    if not words:
+        return None, [], []
+    return word_text(words[0]), words[1:], redirects
+
+
+def check_cat(args, redirects) -> str | None:
+    # Only `cat <single-literal-file>` -- no flags, no redirects, no pipes
+    # (pipes can't reach a command node here, since pipeline commands are
+    # filtered out upstream).
+    if redirects:
+        return None
     if len(args) != 1:
         return None
-    if not is_filename_arg(args[0]) or args[0].startswith("-"):
+    arg = args[0]
+    text = word_text(arg)
+    if not text or text.startswith("-"):
         return None
-    file_q = shlex.quote(args[0])
+    if not has_only_path_parts(arg):
+        return None
+    file_q = shlex.quote(text)
     return (
         f"`cat {file_q}` reads a file -- use the Read tool instead. Read "
         "returns line-numbered output and supports offset/limit for large "
@@ -122,15 +125,17 @@ def check_cat(args: list[str]) -> str | None:
     )
 
 
-def check_head(args: list[str]) -> str | None:
+def check_head(args, redirects) -> str | None:
     # `head <file>`, `head -n N <file>`, `head -N <file>`. Other flags skip.
+    if redirects:
+        return None
     n = 10  # GNU head default
-    file: str | None = None
+    file_word = None
     i = 0
     while i < len(args):
-        a = args[i]
-        if a == "-n" and i + 1 < len(args) and args[i + 1].isdigit():
-            n = int(args[i + 1])
+        a = word_text(args[i])
+        if a == "-n" and i + 1 < len(args) and word_text(args[i + 1]).isdigit():
+            n = int(word_text(args[i + 1]))
             i += 2
         elif len(a) > 1 and a[0] == "-" and a[1:].isdigit():
             n = int(a[1:])
@@ -138,30 +143,37 @@ def check_head(args: list[str]) -> str | None:
         elif a.startswith("-"):
             return None
         else:
-            if file is not None:
+            if file_word is not None:
                 return None
-            if not is_filename_arg(a):
+            if not a or not has_only_path_parts(args[i]):
                 return None
-            file = a
+            file_word = args[i]
             i += 1
-    if file is None:
+    if file_word is None:
         return None
-    file_q = shlex.quote(file)
+    file_q = shlex.quote(word_text(file_word))
     return (
         f"`head -n {n} {file_q}` reads the first {n} lines -- use the Read "
         f"tool with limit={n}. Read also returns line-numbered output."
     )
 
 
-def check_sed(args: list[str]) -> str | None:
+def check_sed(args, redirects) -> str | None:
     # `sed -n '<range>p' <file>` -> Read offset/limit
     # `sed -i '<s/X/Y/[flags]>' <file>` -> Edit
+    if redirects:
+        return None
     if len(args) != 3:
         return None
-    flag, script, file = args
-    if not is_filename_arg(file):
+    flag = word_text(args[0])
+    script = word_text(args[1])
+    file_word = args[2]
+    if not has_only_path_parts(file_word):
         return None
-    file_q = shlex.quote(file)
+    file_text = word_text(file_word)
+    if not file_text or file_text.startswith("-"):
+        return None
+    file_q = shlex.quote(file_text)
 
     if flag == "-n" and SED_PRINT_RE.match(script):
         if "," in script:
@@ -186,76 +198,74 @@ def check_sed(args: list[str]) -> str | None:
     return None
 
 
-def check_echo(tokens: list[str]) -> str | None:
-    # `echo <args>... > <file>`  -> Write
-    # `echo <args>... >> <file>` -> Edit (append)
-    # Requires `>` or `>>` as a standalone token followed by a single file
-    # token at the end. Refuses if a pipe / other redirect is present, or if
-    # echo flags (-n / -e / -E) change semantics in ways Write can't match,
-    # or if the redirect has no content (echo writes "\n", Write writes "").
-    if "|" in tokens or "<" in tokens or "<<" in tokens:
+def check_echo(args, redirects) -> str | None:
+    # `echo <content>... > <file>`  -> Write
+    # `echo <content>... >> <file>` -> Edit (append)
+    # Requires exactly one redirect, of type > or >>, to a literal file.
+    # Refuses if echo flags (-n / -e / -E) change semantics in ways Write
+    # can't match, or if the redirect has no content.
+    if len(redirects) != 1:
+        return None
+    r = redirects[0]
+    if r.type not in (">", ">>"):
+        return None
+    if r.input not in (None, 1):
+        # Non-stdout fd (`2> err`, `10> log`): the file captures something other
+        # than echo's stdout, so Write/Edit can't replicate. Allow through.
+        return None
+    if r.output is None or not has_only_path_parts(r.output):
+        return None
+    file_text = word_text(r.output)
+    if not file_text:
         return None
 
-    for op in (">>", ">"):
-        if op in tokens:
-            idx = tokens.index(op)
-            # Must be exactly: echo <args>... OP <file>  with file last.
-            if idx != len(tokens) - 2:
-                return None
-            file = tokens[idx + 1]
-            if not is_filename_arg(file):
-                return None
-            content = tokens[1:idx]
-            if any(a.startswith("-") for a in content):
-                return None
-            if not content or all(a == "" for a in content):
-                return None
-            file_q = shlex.quote(file)
-            newline_note = (
-                " Note: echo adds a trailing newline; include `\\n` in the "
-                "Write content if you want it."
-            )
-            if op == ">":
-                return (
-                    f"`echo ... > {file_q}` writes a file -- use the Write "
-                    f"tool. Write owns file creation/replacement.{newline_note}"
-                )
-            return (
-                f"`echo ... >> {file_q}` appends to a file -- use the Edit "
-                "tool to add the new content (or Read+Write for a full "
-                f"replacement).{newline_note}"
-            )
-    return None
-
-
-def check_segment(seg: str) -> str | None:
-    """Return a deny reason if this segment is a clean Read/Write/Edit case."""
-    try:
-        tokens = shlex.split(seg)
-    except ValueError:
+    # Content words (everything after `echo`, before the redirect). No flags,
+    # at least one non-empty literal word. A non-literal word (variable, cmd
+    # substitution, tilde) means Write can't reproduce the echoed bytes -- the
+    # shell would expand before echo saw it -- so don't nudge.
+    if not args:
         return None
-    if not tokens:
+    for w in args:
+        if word_text(w).startswith("-"):
+            return None
+        if not has_only_literal_parts(w):
+            return None
+    if all(word_text(w) == "" for w in args):
         return None
 
-    cmd_name = tokens[0]
-    args = tokens[1:]
+    file_q = shlex.quote(file_text)
+    newline_note = (
+        " Note: echo adds a trailing newline; include `\\n` in the "
+        "Write content if you want it."
+    )
+    if r.type == ">":
+        return (
+            f"`echo ... > {file_q}` writes a file -- use the Write "
+            f"tool. Write owns file creation/replacement.{newline_note}"
+        )
+    return (
+        f"`echo ... >> {file_q}` appends to a file -- use the Edit "
+        "tool to add the new content (or Read+Write for a full "
+        f"replacement).{newline_note}"
+    )
 
-    if cmd_name == "cat":
-        # Refuse if any redirect/pipe metacharacter is in the segment.
-        if any(t in (">", ">>", "<", "<<", "|") for t in args):
-            return None
-        return check_cat(args)
-    if cmd_name == "head":
-        if any(t in (">", ">>", "<", "<<", "|") for t in args):
-            return None
-        return check_head(args)
-    if cmd_name == "sed":
-        if any(t in (">", ">>", "<", "<<", "|") for t in args):
-            return None
-        return check_sed(args)
-    if cmd_name == "echo":
-        return check_echo(tokens)
-    return None
+
+CHECKS = {
+    "cat": check_cat,
+    "head": check_head,
+    "sed": check_sed,
+    "echo": check_echo,
+}
+
+
+def check_command(cmd_node) -> str | None:
+    head, args, redirects = split_command(cmd_node)
+    if head is None:
+        return None
+    check = CHECKS.get(head)
+    if check is None:
+        return None
+    return check(args, redirects)
 
 
 def main() -> None:
@@ -271,10 +281,18 @@ def main() -> None:
     if not cmd:
         sys.exit(0)
 
-    for seg in split_segments(cmd):
-        reason = check_segment(seg)
-        if reason is not None:
-            deny(reason)
+    try:
+        trees = bashlex.parse(cmd)
+    except bashlex.errors.ParsingError:
+        # Invalid bash (e.g. `cat <<EOF` with no body, unbalanced quotes).
+        # Fail open: don't block on what we can't parse.
+        sys.exit(0)
+
+    for tree in trees:
+        for cmd_node in iter_simple_commands(tree):
+            reason = check_command(cmd_node)
+            if reason is not None:
+                deny(reason)
 
     sys.exit(0)
 
