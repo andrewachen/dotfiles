@@ -479,6 +479,24 @@ test_x_prunes_shadow_when_target_in_differently_named_group() {
   teardown_test
 }
 
+test_x_named_trap_kills_shadow() {
+  setup_test
+  STUB_TMUX_SESSIONS="foo:foo"
+  STUB_SCREEN_LS=""
+  "$DOTFILES/bin/screen" -x foo >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  new_line=$(printf '%s\n' "$tmux_log" | grep -n "new-session -t foo -s foo-x-" | head -1 | cut -d: -f1)
+  kill_line=$(printf '%s\n' "$tmux_log" | grep -n "kill-session -t foo-x-" | head -1 | cut -d: -f1)
+  if [[ -n $new_line && -n $kill_line && $kill_line -gt $new_line ]]; then
+    printf '  ok %s\n' "kill-session fires after new-session via trap"
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL %s\n    log:\n%s\n' "kill-session fires after new-session via trap" "$tmux_log"
+    FAILED=$((FAILED+1))
+  fi
+  teardown_test
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t
