@@ -574,6 +574,41 @@ test_ls_passes_filter_to_hide_shadows() {
   teardown_test
 }
 
+test_dx_named_keeps_mirror() {
+  setup_test
+  STUB_TMUX_SESSIONS="foo:foo"
+  STUB_SCREEN_LS=""
+  "$DOTFILES/bin/screen" -d -x foo >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  assert_contains "$tmux_log" "attach-session -d -t foo" "-d -x falls through to attach-session -d"
+  assert_not_contains "$tmux_log" "new-session -t foo -s foo-x-" "-d -x does NOT enter shadow mode"
+  teardown_test
+}
+
+test_Dx_named_keeps_mirror() {
+  setup_test
+  STUB_TMUX_SESSIONS="foo:foo"
+  STUB_SCREEN_LS=""
+  "$DOTFILES/bin/screen" -D -x foo >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  assert_contains "$tmux_log" "attach-session -d -t foo" "-D -x falls through to attach-session -d"
+  assert_not_contains "$tmux_log" "new-session -t foo -s foo-x-" "-D -x does NOT enter shadow mode"
+  teardown_test
+}
+
+test_bare_x_no_target_keeps_mirror() {
+  setup_test
+  STUB_TMUX_SESSIONS="foo:foo"
+  STUB_SCREEN_LS=""
+  "$DOTFILES/bin/screen" -x >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  # No target → no -t arg, plain attach-session that tmux resolves
+  # to most-recent unattached. Definitely no shadow mode.
+  assert_contains "$tmux_log" "attach-session" "bare -x falls through to attach-session"
+  assert_not_contains "$tmux_log" "new-session" "bare -x does NOT enter shadow mode"
+  teardown_test
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t
