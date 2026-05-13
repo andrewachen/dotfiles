@@ -397,6 +397,88 @@ test_list_exits_nonzero_when_tmux_running_but_empty() {
   teardown_test
 }
 
+test_x_named_creates_shadow_session() {
+  setup_test
+  STUB_TMUX_SESSIONS="foo"
+  STUB_SCREEN_LS=""
+  "$DOTFILES/bin/screen" -x foo >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  assert_contains "$tmux_log" "new-session -t foo -s foo-x-" "shadow session create was invoked"
+  assert_not_contains "$tmux_log" "attach-session -t foo" "plain attach-session was NOT invoked"
+  teardown_test
+}
+
+test_r_named_still_mirrors() {
+  setup_test
+  STUB_TMUX_SESSIONS="foo"
+  STUB_SCREEN_LS=""
+  "$DOTFILES/bin/screen" -r foo >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  assert_contains "$tmux_log" "attach-session -t foo" "plain attach-session was invoked for -r"
+  assert_not_contains "$tmux_log" "new-session -t foo -s foo-x-" "shadow session was NOT created for -r"
+  teardown_test
+}
+
+test_x_named_does_not_kill_coincidentally_named_session() {
+  setup_test
+  # foo-x-99 looks like a shadow of foo (name matches the pattern, PID 99
+  # is almost certainly dead), but it has NO session group — it's an
+  # unrelated user session that happens to match the pattern. The orphan
+  # prune must NOT kill it. Found by codex review of the original Task 2
+  # implementation.
+  STUB_TMUX_SESSIONS="foo:foo foo-x-99"
+  STUB_SCREEN_LS=""
+  "$DOTFILES/bin/screen" -x foo >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  assert_not_contains "$tmux_log" "kill-session -t foo-x-99" "coincidentally-named session was NOT killed"
+  teardown_test
+}
+
+test_x_prefix_target_canonicalizes() {
+  setup_test
+  # User invokes `screen -x fo`, tmux resolves to `foo` (unique prefix).
+  # The shadow must be named foo-x-<pid> (not fo-x-<pid>), so a future
+  # invocation can prune it via session_group=foo match.
+  STUB_TMUX_SESSIONS="foo:foo"
+  STUB_SCREEN_LS=""
+  "$DOTFILES/bin/screen" -x fo >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  assert_contains "$tmux_log" "new-session -t foo -s foo-x-" "shadow uses canonical target name 'foo', not raw 'fo'"
+  assert_not_contains "$tmux_log" "new-session -t foo -s fo-x-" "shadow does NOT use raw arg as name prefix"
+  teardown_test
+}
+
+test_x_canonicalization_uses_session_namespace() {
+  setup_test
+  # The wrapper must canonicalize $target via display-message with a session
+  # target ("$target:"), not a pane target. The fake-tmux stub doesn't
+  # implement tmux's window/pane namespace, so this test just pins the
+  # invocation form so a future refactor can't quietly drop the trailing
+  # colon and reintroduce the namespace bug.
+  STUB_TMUX_SESSIONS="foo:foo"
+  STUB_SCREEN_LS=""
+  "$DOTFILES/bin/screen" -x foo >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  assert_contains "$tmux_log" "display-message -t foo: -p" "display-message uses session-target form (trailing colon)"
+  teardown_test
+}
+
+test_x_prunes_shadow_when_target_in_differently_named_group() {
+  setup_test
+  # Edge case: user has manually pre-grouped foo into group "devgrp"
+  # (via `tmux new -t devgrp -s foo` or similar). Wrapper-created shadows
+  # of foo will inherit group "devgrp", NOT "foo". Orphan pruning must
+  # resolve the target's actual group and use that for the comparison;
+  # otherwise dead shadows leak.
+  dead_pid=2147483646
+  STUB_TMUX_SESSIONS="foo:devgrp foo-x-${dead_pid}:devgrp"
+  STUB_SCREEN_LS=""
+  "$DOTFILES/bin/screen" -x foo >/dev/null 2>&1 || true
+  tmux_log=$(cat "$STUB_TMUX_LOG")
+  assert_contains "$tmux_log" "kill-session -t foo-x-${dead_pid}" "shadow in pre-existing differently-named group was pruned"
+  teardown_test
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t

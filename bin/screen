@@ -13,6 +13,7 @@ session_name=
 target=
 list_sessions=false
 attach_requested=false
+attach_via_x=false
 create_if_missing=false
 detach_requested=false
 detach_others=false
@@ -119,6 +120,9 @@ parse_cluster() {
                 ;;
             r|x)
                 attach_requested=true
+                if [[ $ch == x ]]; then
+                    attach_via_x=true
+                fi
                 if [[ -n $chars ]]; then
                     target=$chars
                     chars=
@@ -261,6 +265,70 @@ if [[ $attach_requested == true ]]; then
                   } END { exit !found }'; then
                 exec "$screen_bin" "${original_args[@]}"
             fi
+        fi
+    fi
+
+    # screen -x NAME (bare, with target, no detach) → independent view via
+    # tmux session group. Create a shadow session NAME-x-<wrapper-pid> grouped
+    # with NAME, attach to the shadow, and kill the shadow on detach via
+    # EXIT trap. Other -x variants (-dx, -Dx) and -r fall through to plain
+    # attach-session below.
+    if [[ $attach_via_x == true && -n $target && $detach_requested == false && $create_if_missing == false ]]; then
+        require_tmux
+        if "$tmux_bin" has-session -t "$target" 2>/dev/null; then
+            # tmux's -t accepts unique prefixes; resolve $target to the real
+            # session name so shadow naming and orphan-prune group matching
+            # use the canonical anchor, not whatever prefix the user typed.
+            # `$target:` forces session-target parsing — without the colon,
+            # display-message resolves -t as a target-pane, which from inside
+            # a tmux session can pick a window of the current session that
+            # happens to share the target's name.
+            canonical_target=$("$tmux_bin" display-message -t "$target:" -p '#{session_name}' 2>/dev/null)
+            if [[ -n $canonical_target ]]; then
+                target=$canonical_target
+            fi
+
+            shadow_name="$target-x-$$"
+
+            # Prune orphan shadows from previously-killed wrappers in the
+            # same family. Pattern: <target>-x-<digits>; the digits are the
+            # wrapper PID at creation time. If kill -0 fails, the wrapper
+            # is gone and the shadow is a ghost — drop it.
+
+            # Resolve target's actual session group. When the user pre-groups
+            # sessions outside the wrapper (e.g., `tmux new -t devgrp -s foo`),
+            # the group's name is NOT the target's name, and our shadow will
+            # inherit that group. For standalone sessions, session_group is
+            # empty — but our future shadow will create a new group whose
+            # name defaults to $target, so $target is the right value.
+            target_group=$("$tmux_bin" display-message -t "$target:" -p '#{session_group}' 2>/dev/null)
+            [[ -z $target_group ]] && target_group=$target
+
+            # Only consider sessions in $target's session group. The name
+            # pattern alone is not enough — a user could have a legitimate
+            # session named NAME-x-<digits> that has nothing to do with this
+            # wrapper, and we must not kill it.
+            while IFS='|' read -r existing existing_group; do
+                [[ -z $existing ]] && continue
+                [[ $existing_group != "$target_group" ]] && continue
+                rest=${existing#"$target-x-"}
+                if [[ $rest != "$existing" && $rest =~ ^[0-9]+$ ]]; then
+                    if ! kill -0 "$rest" 2>/dev/null; then
+                        "$tmux_bin" kill-session -t "$existing" 2>/dev/null || true
+                    fi
+                fi
+            done < <("$tmux_bin" list-sessions -F '#{session_name}|#{session_group}' 2>/dev/null || true)
+
+            # Clean up our own shadow on any exit path. tmux kill-session
+            # is idempotent (we silence "no such session"), so a duplicate
+            # cleanup from a fast user-initiated kill is harmless.
+            cleanup_shadow() {
+                "$tmux_bin" kill-session -t "$shadow_name" 2>/dev/null || true
+            }
+            trap cleanup_shadow EXIT INT TERM HUP
+
+            "$tmux_bin" new-session -t "$target" -s "$shadow_name"
+            exit $?
         fi
     fi
 
