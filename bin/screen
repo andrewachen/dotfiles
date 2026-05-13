@@ -1,6 +1,6 @@
 #!/bin/bash
 # ABOUTME: Compatibility wrapper that maps common GNU screen invocations to tmux.
-# ABOUTME: Named attach falls back to /usr/bin/screen on tmux miss; other modes fail loudly.
+# ABOUTME: -x NAME uses a tmux session group so each terminal has an independent window view.
 
 set -uo pipefail
 
@@ -42,6 +42,16 @@ Supported:
 
 In this wrapper, -D detaches other tmux clients without sending SIGHUP/logout.
 
+screen -x NAME (bare) creates an independent view: each terminal that runs
+screen -x NAME against the same NAME shares the same windows but tracks its
+own current window, like GNU screen's multi-display mode. This is
+implemented via a tmux session group; the shadow session is named
+NAME-x-<wrapper-pid> and is cleaned up when the terminal detaches.
+Shadow sessions are hidden from screen -ls.
+
+screen -r NAME and the detach-combined variants (-d -x, -D -x, -d -r, -D -r)
+keep the mirrored-view behavior — all attached clients see the same window.
+
 Unsupported screen options do not fall back to GNU screen.
 
 Fallback: if a named-target attach (-r, -x, -d -r, -D -r) finds no matching
@@ -49,8 +59,9 @@ tmux session and /usr/bin/screen lists one whose name starts with the
 target (prefix match, like screen -r itself), the wrapper hands off to GNU
 screen with the original arguments. Other modes do not fall back.
 
-Listing: -ls / -l / -list emits tmux sessions first, then GNU screen
-sessions (separated by a blank line) when /usr/bin/screen is available.
+Listing: -ls / -l / -list emits tmux sessions first (shadow sessions
+hidden), then GNU screen sessions (separated by a blank line) when
+/usr/bin/screen is available.
 
 Use tmux directly for behavior outside this compatibility set.
 EOF
