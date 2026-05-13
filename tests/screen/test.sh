@@ -556,6 +556,24 @@ test_x_named_ignores_unrelated_session_names() {
   teardown_test
 }
 
+test_ls_passes_filter_to_hide_shadows() {
+  setup_test
+  STUB_TMUX_SESSIONS="foo:foo"
+  STUB_SCREEN_LS=""
+  export STUB_TMUX_LS_FILTER_LOG="$TMPDIR_TEST/tmux-ls-filter.log"
+  : > "$STUB_TMUX_LS_FILTER_LOG"
+  "$DOTFILES/bin/screen" -ls >/dev/null 2>&1 || true
+  filter_log=$(cat "$STUB_TMUX_LS_FILTER_LOG")
+  # The filter must reference both session_grouped and session_group AND
+  # use the shadow glob pattern so user-created group members survive.
+  # (See bin/screen for the full filter rationale.)
+  assert_contains "$filter_log" "session_grouped" "list-sessions -f references session_grouped"
+  assert_contains "$filter_log" "session_group" "list-sessions -f references session_group"
+  assert_contains "$filter_log" '#{m:*-x-*,#{session_name}}' "filter restricts hiding to *-x-* shadow name pattern"
+  unset STUB_TMUX_LS_FILTER_LOG
+  teardown_test
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t

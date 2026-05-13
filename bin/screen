@@ -199,7 +199,19 @@ if [[ $list_sessions == true ]]; then
         die "session listing cannot be combined with other screen options"
     fi
     require_tmux
-    tmux_out=$("$tmux_bin" list-sessions 2>/dev/null) || true
+    # Hide ONLY wrapper-created shadow sessions from -ls. All wrapper
+    # shadows have names of the form *-x-* (target, "-x-", PID). Combined
+    # with the grouped+not-anchor gate, this catches shadows regardless
+    # of the tmux session_group's actual name (which may differ from the
+    # canonical target's name if the user pre-grouped sessions outside
+    # the wrapper) or of glob metacharacters in the target name.
+    # Trade-off: a legitimate user-created group member whose name
+    # happens to contain "-x-" would be hidden. Narrow case; users rarely
+    # name sessions with -x- in the middle.
+    # Filter keeps: not grouped OR anchor OR name does not match *-x-*.
+    # `#{==:X,0}` negates a predicate (tmux 3.4 has no working `!:` op).
+    tmux_ls_filter='#{||:#{||:#{==:#{session_grouped},0},#{==:#{session_name},#{session_group}}},#{==:#{m:*-x-*,#{session_name}},0}}'
+    tmux_out=$("$tmux_bin" list-sessions -f "$tmux_ls_filter" 2>/dev/null) || true
     [[ -n $tmux_out ]] && printf '%s\n' "$tmux_out"
 
     screen_rc=1
