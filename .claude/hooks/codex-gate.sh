@@ -213,7 +213,9 @@ def classify_pairs(pairs):
         sub_str, sub_dyn = rest[0]
         if sub_dyn:
             return True
-        return sub_str == "push"
+        if sub_str != "push":
+            return False
+        return not is_pure_delete_push(rest[1:])
     if head_str == "gh":
         rest = skip_options(pairs[1:], GH_BOOLEAN, GH_VALUED)
         if rest is None:
@@ -235,6 +237,54 @@ def classify_pairs(pairs):
             return True
         return inner_str == "create"
     return False
+
+def is_pure_delete_push(push_args):
+    """Decide whether the word pairs after `git push` describe an all-deletion
+    push (no commits sent, nothing for codex to review). Returns True only
+    when every refspec is a literal `:...` deletion and the line has no
+    options that could affect what gets sent. False otherwise; the caller
+    then falls through to the gate (fail-closed).
+
+    Detection is positional-only:
+      * Every positional after the first (the remote) starts with `:` and is
+        not bare `:` (bare `:` is git matching-branches push, not a delete)
+      * Single positional case: it must itself be a literal `:foo` form
+        (`git push :foo` against the default remote)
+
+    Any option after `push` forces False. Modelling push-option grammar
+    (--repo, -o, --receive-pack, --exec, --tags, --mirror, --signed,
+    --force-with-lease, ...) is more code than gating-on-options is worth:
+    a valued option can consume a `--delete` as its value (false-allow), and
+    refs-expanding options like --tags can add real refs to an otherwise
+    delete-shaped command. The recovery path for the rare `git push --delete
+    foo` form is a normal codex-review-capture run.
+
+    Dynamic words anywhere also force False -- the runtime value could expand
+    to an option, an extra refspec, or split into multiple words.
+
+    Shell metacharacters in any arg also force False. bashlex does not expand
+    brace expressions or globs, so `:{,foo}` arrives as a static literal but
+    bash splits it into `:` and `:foo` at runtime -- the bare `:` half is a
+    matching-branches push. Same hazard for `*`, `?`, `[...]`, and `\` escapes.
+    Refusing any word containing `{}*?[]\` covers the class."""
+    SHELL_META = "{}*?[]\\"
+    positionals = []
+    for word, dyn in push_args:
+        if dyn:
+            return False
+        if word.startswith("-"):
+            return False
+        if any(c in word for c in SHELL_META):
+            return False
+        positionals.append(word)
+    if not positionals:
+        return False
+    if len(positionals) == 1:
+        return positionals[0].startswith(":") and positionals[0] != ":"
+    for word in positionals[1:]:
+        if not word.startswith(":") or word == ":":
+            return False
+    return True
 
 def is_push_command(cmd_node):
     """Check whether a bashlex CommandNode represents a git push / gh pr

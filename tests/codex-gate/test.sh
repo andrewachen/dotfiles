@@ -1194,6 +1194,183 @@ test_gate_falls_through_when_tool_command_absent() {
   teardown_repo
 }
 
+# A push whose refspecs are all `:`-prefix deletions has no commits to review,
+# so the gate must let it through. Detection is positional-only -- any option
+# after `push`, or any dynamic word, gates instead (fail-closed). `--delete`
+# and `-d` flag forms are intentionally NOT supported: a valued option earlier
+# on the line (e.g. `-o --delete`) can consume the flag, false-allowing a
+# real push. Recovery for the rare flag form is a normal codex-review-capture
+# run.
+
+test_gate_passes_pure_delete_via_empty_source_refspec() {
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessDel1","cwd":"%s","tool_input":{"command":"git push fork :refs/heads/foo"}}' "$REPO")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate passes pure-delete push via empty source refspec"
+  teardown_repo
+}
+
+test_gate_passes_pure_delete_via_short_branch_name() {
+  # `:foo` (no refs/heads/ prefix) is also a delete refspec.
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessDel2","cwd":"%s","tool_input":{"command":"git push fork :foo"}}' "$REPO")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate passes pure-delete push via short :name refspec"
+  teardown_repo
+}
+
+test_gate_passes_pure_delete_default_remote() {
+  # `git push :foo` against the default-configured remote is still a delete.
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessDel3","cwd":"%s","tool_input":{"command":"git push :refs/heads/foo"}}' "$REPO")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate passes pure-delete push to default remote"
+  teardown_repo
+}
+
+test_gate_passes_pure_delete_with_multiple_refspecs() {
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessDel4","cwd":"%s","tool_input":{"command":"git push fork :refs/heads/foo :refs/heads/bar"}}' "$REPO")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate passes pure-delete push with multiple delete refspecs"
+  teardown_repo
+}
+
+test_gate_blocks_mixed_push_and_delete() {
+  # `git push fork foo :refs/heads/bar` pushes `foo` and deletes `bar`. The
+  # push half is unreviewed, so the gate still fires.
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessDel5","cwd":"%s","tool_input":{"command":"git push fork foo :refs/heads/bar"}}' "$REPO")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate blocks mixed push+delete (push half is unreviewed)"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_dynamic_refspec() {
+  # A dynamic refspec (`for x in y; do git push fork $x; done`) could expand
+  # to either a delete or a regular push. Fail closed -- gate it.
+  setup_repo
+  cmd='for x in y; do git push fork $x; done'
+  gate_input=$(printf '{"session_id":"sessDelDynRef","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate blocks push with dynamic refspec (could expand to non-delete)"
+  teardown_repo
+}
+
+# Cases below pin codex-caught false-allow shapes the simple positional rule
+# must NOT permit.
+
+test_gate_blocks_delete_flag_when_consumed_by_push_option() {
+  # `git push -o --delete origin main` makes `-o` (push-option) consume
+  # `--delete` as its value. Real command is `git push origin main`. The
+  # rule must not allow this -- modelling option grammar is the trap codex
+  # caught. We gate on the presence of any option after `push`.
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessDelFalseAllow1","cwd":"%s","tool_input":{"command":"git push -o --delete origin main"}}' "$REPO")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate blocks '-o --delete' (push-option consumes --delete as value)"
+  teardown_repo
+}
+
+test_gate_blocks_tags_with_delete_refspec() {
+  # `git push --tags origin :old` pushes all tags AND deletes old. The
+  # positional refspec is :old but --tags adds refs, so this is not a pure
+  # delete. Any option after `push` -> gate.
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessDelFalseAllow2","cwd":"%s","tool_input":{"command":"git push --tags origin :refs/heads/old"}}' "$REPO")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate blocks --tags with :delete refspec (--tags adds refs)"
+  teardown_repo
+}
+
+test_gate_blocks_dynamic_first_positional() {
+  # `git push $remote :old` -- if $remote expands to `origin main`, runtime
+  # is `git push origin main :old`, which pushes main. Dynamic words gate.
+  setup_repo
+  cmd='for x in y; do git push $remote :refs/heads/old; done'
+  gate_input=$(printf '{"session_id":"sessDelFalseAllow3","cwd":"%s","tool_input":{"command":"%s"}}' "$REPO" "$cmd")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate blocks dynamic first positional (could expand to push+remote)"
+  teardown_repo
+}
+
+test_gate_blocks_bare_colon_refspec() {
+  # `git push origin :` is git matching-branches push (sends commits to
+  # any local branch that matches a remote branch by name), NOT a deletion.
+  # The startswith(":") check must reject the bare-colon form explicitly.
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessDelBareColon","cwd":"%s","tool_input":{"command":"git push origin :"}}' "$REPO")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate blocks bare \`:\` refspec (matching-branches push, not delete)"
+  teardown_repo
+}
+
+test_gate_blocks_brace_expanded_refspec() {
+  # `git push origin :{,foo}` brace-expands to `git push origin : :foo`:
+  # the bare `:` half is git matching-branches push (sends commits), the
+  # `:foo` half deletes foo. bashlex leaves `:{,foo}` as one literal word,
+  # so without an explicit metacharacter check the rule would false-allow.
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessDelBrace","cwd":"%s","tool_input":{"command":"git push origin :{,foo}"}}' "$REPO")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate blocks brace-expanded refspec (bash expands to bare-colon push)"
+  teardown_repo
+}
+
+test_gate_blocks_glob_refspec() {
+  # `:*` would glob-expand against the cwd. Refnames cannot contain `*`,
+  # so any literal `*` in a refspec is shell metacharacter.
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessDelGlob","cwd":"%s","tool_input":{"command":"git push origin :*"}}' "$REPO")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate blocks glob in refspec (runtime expansion unknown)"
+  teardown_repo
+}
+
+test_gate_blocks_push_with_delete_flag_after_simplification() {
+  # Documents the trade-off: the simpler positional-only rule gates the
+  # `--delete` flag form. Recovery is a normal codex-review-capture run.
+  # This test pins that behavior so a future "let me support --delete"
+  # change has to address the valued-option consumption hazard codex caught
+  # (e.g. `-o --delete origin main`).
+  setup_repo
+  gate_input=$(printf '{"session_id":"sessDelFlagGated","cwd":"%s","tool_input":{"command":"git push fork --delete foo"}}' "$REPO")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate blocks --delete flag form (any option after push gates)"
+  teardown_repo
+}
+
 for t in $(declare -F | awk '/^declare -f test_/ {print $3}'); do
   printf '\n--- %s\n' "$t"
   $t
