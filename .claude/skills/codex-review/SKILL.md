@@ -99,6 +99,16 @@ Some projects gate push on a successful `codex review`. If there's no hook, Code
 
 When the dotfiles' codex-gate hooks are wired up, the gate only opens after a `codex-review-capture` invocation that includes one of `--commit <sha>`, `--base <branch>`, or `--uncommitted`. A bare `codex review` or `codex-review-capture` (no mode flag) writes no sentinel and the next push will be blocked. Always pass an explicit mode flag in gated projects.
 
-The `--uncommitted` mode further requires a clean untracked state — if untracked files are present, the wrapper fails closed and asks you to `git add` them first. This is a deliberate trade-off: the gate's verification is `git diff BASE` against the current tree, which doesn't see untracked files, so we require everything codex reviews to be tracked at review time.
+The `--uncommitted` mode further requires a clean untracked state — if untracked files are present, the wrapper fails closed and asks you to `git add` them first. This is a deliberate trade-off: the gate's verification is `git diff BASE` against the current tree, which doesn't see untracked files, so we require everything codex reviews to be tracked at review time. The wrapper also refuses to write a sentinel when the computed diff is empty (clean tree + `--uncommitted`, or a `--base` equal to HEAD): there's nothing for codex to verify, and an empty-diff sentinel would false-allow pushes from any clean state.
 
 For multi-commit branches, prefer `--base <branch>` over `--commit <sha>`. The gate's per-mode hash math doesn't constrain *which* commits are being pushed — `--base` covers the whole unpushed range; `--commit X` only verifies X.
+
+### One review covers the whole ship sequence
+
+The gate does NOT consume the sentinel on match. A single `codex-review-capture` invocation unblocks every gated tool call (`git push`, `gh pr create`, repeated pushes of the same diff, …) until the diff itself changes. As soon as you add commits or modify the working tree, the diff hash drifts and the sentinel stops matching — at which point you need a fresh review.
+
+### Cache hits
+
+If you run `codex-review-capture` on a diff that's already been reviewed by you (same UID, same repo basename, same diff content) and the BASE commit is still reachable, the wrapper short-circuits with a stderr note like `hash <prefix> already reviewed; gate unblocked.` It does NOT run codex again and does NOT replay the original verdict — stdout is empty.
+
+What this means for your report: **an empty stdout from `codex-review-capture` is a cache hit, not a "no issues" verdict.** If the gate is already unblocked, that's enough — proceed with the push and don't fabricate findings. If you need fresh findings, delete the cached file (the wrapper's stderr names it) and rerun.

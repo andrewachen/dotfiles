@@ -26,7 +26,6 @@ else
 fi
 
 INPUT=$(cat)
-SESSION_ID=$(echo "$INPUT" | _json_get session_id nosession)
 CWD=$(echo "$INPUT" | _json_get cwd)
 
 COMMAND=$(echo "$INPUT" | _tool_command)
@@ -51,7 +50,13 @@ COMMAND=$(echo "$INPUT" | _tool_command)
 # a one-time cost; an offline-with-empty-cache run falls through to the gate
 # (false-block on non-push commands -- recoverable via codex-review-capture).
 if [[ -n "$COMMAND" ]] && command -v uv >/dev/null 2>&1; then
-  if echo "$COMMAND" | uv run --with bashlex --quiet python3 -c '
+  # --no-project: don't try to resolve the surrounding project's pyproject.toml.
+  # The bashlex parser only needs `bashlex` (via --with). When the gate fires
+  # in a project whose pyproject can't be resolved (platform-conditional deps
+  # absent from PyPI, etc.), the implicit project sync fails and the parser
+  # never runs, falling the gate through to the sentinel check and over-gating
+  # benign commands.
+  if echo "$COMMAND" | uv run --no-project --with bashlex --quiet python3 -c '
 import sys
 import bashlex
 import bashlex.errors
@@ -341,49 +346,62 @@ if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
 fi
 
 REPO_NAME=$(basename "$(git rev-parse --show-toplevel)")
-SENTINEL="/tmp/codex-gate-${SESSION_ID}-${REPO_NAME}"
 
-if [[ ! -f "$SENTINEL" ]]; then
-  echo "BLOCKED: No codex review found for this session." >&2
-  echo "Run: codex-review-capture --base <branch>  (or --commit HEAD, --uncommitted)" >&2
-  echo "Then retry the push." >&2
-  exit 2
-fi
-
-# Sentinel format: line 1 = BASE_SHA, line 2 = DIFF_HASH.
+# Hash-keyed sentinel scan. Each file at
+# /tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${HASH} records one
+# successful codex review: filename suffix is the sha256 of `git diff $BASE`
+# captured at review time; contents are the BASE commit (one line). The gate
+# iterates each, reads its BASE, recomputes the diff hash against the current
+# tree, and admits the push on the first file whose recomputed hash matches
+# its filename. Sentinels are NOT consumed on match: a single review covers
+# the whole ship sequence (`git push` followed by `gh pr create`, or repeated
+# pushes of the same diff). The sentinel becomes invalid the moment the diff
+# changes -- the new hash won't match any existing filename. Stale sentinels
+# from past pushes linger in /tmp until reboot or manual cleanup; harmless.
+#
 # BASE_SHA depends on the codex review mode the wrapper observed:
 #   --commit X     -> BASE_SHA = X^,                  HASH = sha256(git diff X^ X)
 #   --base B       -> BASE_SHA = merge-base(B, HEAD), HASH = sha256(git diff BASE HEAD)
 #   --uncommitted  -> BASE_SHA = HEAD,                HASH = sha256(git diff HEAD)
-# We recompute HASH = sha256(git diff BASE_SHA) against the current working
-# tree. If the user committed exactly the reviewed changes (and nothing more),
-# the diff content is byte-identical and the hash matches.
-{ read -r BASE; read -r STORED_HASH; } < "$SENTINEL" || true
+#
+# Files whose BASE is unreachable (rebased away) or whose contents are empty
+# are skipped silently -- they're stale. We track whether any *valid* (BASE
+# reachable, contents present) review existed so we can distinguish "no
+# reviews on file" from "reviews exist but don't match the current tree" in
+# the error message.
+matched=""
+any_valid_review=false
+shopt -s nullglob
+# Quote the literal prefix so REPO_NAME values containing spaces or glob
+# metacharacters (`[`, `?`, `*`) aren't word-split or pre-expanded out of the
+# glob pattern. The trailing `*` stays unquoted to remain a wildcard.
+for f in "/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-"*; do
+  hash_from_name="${f##*-}"
+  base=$(< "$f")
+  [[ -z "$base" ]] && continue
+  git rev-parse --verify "${base}^{commit}" >/dev/null 2>&1 || continue
+  any_valid_review=true
+  current_hash=$(git diff "$base" 2>/dev/null | _sha256)
+  if [[ "$current_hash" == "$hash_from_name" ]]; then
+    matched="$f"
+    break
+  fi
+done
+shopt -u nullglob
 
-if [[ -z "$BASE" || -z "$STORED_HASH" ]]; then
-  echo "BLOCKED: Codex review sentinel is malformed." >&2
-  echo "Run codex-review-capture again, then retry." >&2
-  exit 2
+if [[ -n "$matched" ]]; then
+  exit 0
 fi
 
-if ! git rev-parse --verify "$BASE^{commit}" >/dev/null 2>&1; then
-  echo "BLOCKED: The base reviewed by codex ($BASE) is no longer" >&2
-  echo "reachable (rebased, reset, or branch deleted). Run codex-review-capture" >&2
-  echo "again against the current branch, then retry." >&2
-  exit 2
-fi
-
-CURRENT_DIFF_HASH=$(git diff "$BASE" 2>/dev/null | _sha256)
-
-if [[ "$CURRENT_DIFF_HASH" != "$STORED_HASH" ]]; then
+if $any_valid_review; then
   echo "BLOCKED: Code changed since last codex review." >&2
-  echo "The diff from the reviewed base ($BASE) to the current tree" >&2
-  echo "no longer matches what codex saw. Either you added work beyond what was" >&2
-  echo "reviewed, or you modified the reviewed changes. Run codex-review-capture" >&2
-  echo "again, then retry." >&2
+  echo "None of the reviews on file produce a diff matching the current tree." >&2
+  echo "Either you added work beyond what was reviewed, or you modified the" >&2
+  echo "reviewed changes. Run codex-review-capture again, then retry." >&2
   exit 2
 fi
 
-# Consume the sentinel so the next push requires a fresh review
-rm -f "$SENTINEL"
-exit 0
+echo "BLOCKED: No codex review found." >&2
+echo "Run: codex-review-capture --base <branch>  (or --commit HEAD, --uncommitted)" >&2
+echo "Then retry the push." >&2
+exit 2

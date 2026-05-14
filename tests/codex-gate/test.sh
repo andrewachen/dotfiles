@@ -72,6 +72,7 @@ teardown_repo() {
   cd /
   rm -rf "$REPO"
   rm -f "/tmp/codex-gate-staged-${UID}-${REPO_NAME}-"* 2>/dev/null
+  rm -f "/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-"* 2>/dev/null
   rm -f "/tmp/codex-gate-"*"-${REPO_NAME}" 2>/dev/null
   [[ -n "${HARNESS_BIN:-}" ]] && rm -rf "$HARNESS_BIN"
   [[ -n "${CODEX_HOME:-}" ]] && rm -rf "$CODEX_HOME"
@@ -80,60 +81,40 @@ teardown_repo() {
 
 # Tests appended below
 
-test_wrapper_uncommitted_writes_staged() {
-  setup_repo
-  echo "baseline" > foo.txt
-  git add foo.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
-  echo "modified" > foo.txt
-  stderr=$("$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
-  staged=$(echo "$stderr" | grep -oE 'staged=[^[:space:]]+' | head -n1 | cut -d= -f2-)
-  assert_file_exists "$staged"
-  if [[ -f "$staged" ]]; then
-    base=$(sed -n 1p "$staged")
-    hash=$(sed -n 2p "$staged")
-    expected_base=$(git rev-parse HEAD)
-    expected_hash=$(git diff HEAD | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
-    assert_eq "$base" "$expected_base" "uncommitted base = HEAD"
-    assert_eq "$hash" "$expected_hash" "uncommitted hash = sha256(git diff HEAD)"
-  fi
-  teardown_repo
-}
-
-test_wrapper_commit_mode_hashes_commit_diff() {
+test_wrapper_commit_mode_records_parent_as_base() {
   setup_repo
   echo "first" > a.txt
   git add a.txt && git -c user.email=t@t -c user.name=t commit -q -m "add a"
   COMMIT=$(git rev-parse HEAD)
   echo "uncommitted_dirty" > b.txt
-  stderr=$("$DOTFILES/bin/codex-review-capture" --commit "$COMMIT" 2>&1 >/dev/null)
-  staged=$(echo "$stderr" | grep -oE 'staged=[^[:space:]]+' | head -n1 | cut -d= -f2-)
-  assert_file_exists "$staged"
-  if [[ -f "$staged" ]]; then
-    base=$(sed -n 1p "$staged")
-    hash=$(sed -n 2p "$staged")
-    expected_base=$(git rev-parse "$COMMIT^")
-    expected_hash=$(git diff "$COMMIT^" "$COMMIT" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
-    assert_eq "$base" "$expected_base" "commit base = parent"
-    assert_eq "$hash" "$expected_hash" "commit hash ignores dirty tree"
+  "$DOTFILES/bin/codex-review-capture" --commit "$COMMIT" >/dev/null 2>&1
+  expected_base=$(git rev-parse "$COMMIT^")
+  expected_hash=$(git diff "$COMMIT^" "$COMMIT" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  reviewed="/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${expected_hash}"
+  assert_file_exists "$reviewed"
+  if [[ -f "$reviewed" ]]; then
+    assert_eq "$(cat "$reviewed")" "$expected_base" "commit mode: BASE = parent of reviewed commit (dirty tree ignored)"
   fi
+  rm -f "$reviewed"
   teardown_repo
 }
 
-test_wrapper_base_mode_uses_merge_base() {
+test_wrapper_base_mode_records_merge_base() {
   setup_repo
   echo "main_change" > m.txt
   git add m.txt && git -c user.email=t@t -c user.name=t commit -q -m "main"
   git checkout -q -b feature
   echo "feat_change" > f.txt
   git add f.txt && git -c user.email=t@t -c user.name=t commit -q -m "feat"
-  stderr=$("$DOTFILES/bin/codex-review-capture" --base main 2>&1 >/dev/null)
-  staged=$(echo "$stderr" | grep -oE 'staged=[^[:space:]]+' | head -n1 | cut -d= -f2-)
-  assert_file_exists "$staged"
-  if [[ -f "$staged" ]]; then
-    base=$(sed -n 1p "$staged")
-    expected_base=$(git merge-base main HEAD)
-    assert_eq "$base" "$expected_base" "base mode uses merge-base(main, HEAD)"
+  "$DOTFILES/bin/codex-review-capture" --base main >/dev/null 2>&1
+  expected_base=$(git merge-base main HEAD)
+  expected_hash=$(git diff "$expected_base" HEAD | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  reviewed="/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${expected_hash}"
+  assert_file_exists "$reviewed"
+  if [[ -f "$reviewed" ]]; then
+    assert_eq "$(cat "$reviewed")" "$expected_base" "base mode: BASE = merge-base(main, HEAD)"
   fi
+  rm -f "$reviewed"
   teardown_repo
 }
 
@@ -185,14 +166,15 @@ test_wrapper_accepts_equals_form_commit_flag() {
   echo "first" > a.txt
   git add a.txt && git -c user.email=t@t -c user.name=t commit -q -m "add a"
   COMMIT=$(git rev-parse HEAD)
-  stderr=$("$DOTFILES/bin/codex-review-capture" "--commit=$COMMIT" 2>&1 >/dev/null)
-  staged=$(echo "$stderr" | grep -oE 'staged=[^[:space:]]+' | head -n1 | cut -d= -f2-)
-  assert_file_exists "$staged"
-  if [[ -f "$staged" ]]; then
-    base=$(sed -n 1p "$staged")
-    expected_base=$(git rev-parse "$COMMIT^")
-    assert_eq "$base" "$expected_base" "equals-form --commit= parsed correctly"
+  "$DOTFILES/bin/codex-review-capture" "--commit=$COMMIT" >/dev/null 2>&1
+  expected_base=$(git rev-parse "$COMMIT^")
+  expected_hash=$(git diff "$COMMIT^" "$COMMIT" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  reviewed="/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${expected_hash}"
+  assert_file_exists "$reviewed"
+  if [[ -f "$reviewed" ]]; then
+    assert_eq "$(cat "$reviewed")" "$expected_base" "equals-form --commit= parsed correctly"
   fi
+  rm -f "$reviewed"
   teardown_repo
 }
 
@@ -223,51 +205,15 @@ test_wrapper_accepts_equals_form_base_flag() {
   git checkout -q -b feature
   echo "feat_change" > f.txt
   git add f.txt && git -c user.email=t@t -c user.name=t commit -q -m "feat"
-  stderr=$("$DOTFILES/bin/codex-review-capture" "--base=main" 2>&1 >/dev/null)
-  staged=$(echo "$stderr" | grep -oE 'staged=[^[:space:]]+' | head -n1 | cut -d= -f2-)
-  assert_file_exists "$staged"
-  if [[ -f "$staged" ]]; then
-    base=$(sed -n 1p "$staged")
-    expected_base=$(git merge-base main HEAD)
-    assert_eq "$base" "$expected_base" "equals-form --base= uses merge-base"
+  "$DOTFILES/bin/codex-review-capture" "--base=main" >/dev/null 2>&1
+  expected_base=$(git merge-base main HEAD)
+  expected_hash=$(git diff "$expected_base" HEAD | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  reviewed="/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${expected_hash}"
+  assert_file_exists "$reviewed"
+  if [[ -f "$reviewed" ]]; then
+    assert_eq "$(cat "$reviewed")" "$expected_base" "equals-form --base= uses merge-base"
   fi
-  teardown_repo
-}
-
-test_pass_hook_promotes_staged_to_sentinel() {
-  setup_repo
-  staged="/tmp/codex-gate-staged-${UID}-${REPO_NAME}-99999"
-  printf 'abcdef\n123hash\n' > "$staged"
-  input=$(printf '{"session_id":"sess1","cwd":"%s","tool_response":{"stderr":"codex-review-capture: staged=%s\\n"}}' "$REPO" "$staged")
-  echo "$input" | bash "$DOTFILES/.claude/hooks/codex-gate-pass.sh"
-  sentinel="/tmp/codex-gate-sess1-${REPO_NAME}"
-  assert_file_exists "$sentinel"
-  assert_no_file "$staged"
-  if [[ -f "$sentinel" ]]; then
-    assert_eq "$(sed -n 1p "$sentinel")" "abcdef" "promoted base preserved"
-    assert_eq "$(sed -n 2p "$sentinel")" "123hash" "promoted hash preserved"
-  fi
-  rm -f "$sentinel"
-  teardown_repo
-}
-
-test_pass_hook_noops_without_staged_line() {
-  setup_repo
-  input=$(printf '{"session_id":"sess2","cwd":"%s","tool_response":{"stderr":"unrelated output"}}' "$REPO")
-  echo "$input" | bash "$DOTFILES/.claude/hooks/codex-gate-pass.sh"
-  assert_no_file "/tmp/codex-gate-sess2-${REPO_NAME}"
-  teardown_repo
-}
-
-test_pass_hook_exits_zero_when_no_staged_marker() {
-  setup_repo
-  input=$(printf '{"session_id":"sess3","cwd":"%s","tool_response":{"stderr":"bare codex output without marker"}}' "$REPO")
-  set +e
-  echo "$input" | bash "$DOTFILES/.claude/hooks/codex-gate-pass.sh"
-  rc=$?
-  set -e
-  assert_eq "$rc" "0" "pass-hook exits 0 when stderr has no staged= marker"
-  assert_no_file "/tmp/codex-gate-sess3-${REPO_NAME}"
+  rm -f "$reviewed"
   teardown_repo
 }
 
@@ -276,15 +222,13 @@ test_e2e_uncommitted_review_then_push_passes() {
   echo "feature" > feat.txt
   git add feat.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline before feature"
   echo "modified feature" > feat.txt
-  stderr=$("$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
-  staged=$(echo "$stderr" | grep -oE 'staged=[^[:space:]]+' | head -n1 | cut -d= -f2-)
-  pass_input=$(printf '{"session_id":"e2e1","cwd":"%s","tool_response":{"stderr":"%s"}}' "$REPO" "codex-review-capture: staged=$staged")
-  echo "$pass_input" | bash "$DOTFILES/.claude/hooks/codex-gate-pass.sh"
-  gate_input=$(printf '{"session_id":"e2e1","cwd":"%s"}' "$REPO")
+  "$DOTFILES/bin/codex-review-capture" --uncommitted >/dev/null 2>&1
+  gate_input=$(printf '{"cwd":"%s","tool_input":{"command":"git push origin main"}}' "$REPO")
   echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
   rc=$?
   assert_eq "$rc" "0" "gate accepts after fresh uncommitted review"
-  assert_no_file "/tmp/codex-gate-e2e1-${REPO_NAME}"
+  expected_hash=$(git diff HEAD | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  rm -f "/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${expected_hash}"
   teardown_repo
 }
 
@@ -293,18 +237,16 @@ test_e2e_uncommitted_review_then_extra_edit_blocks() {
   echo "feature" > feat.txt
   git add feat.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
   echo "modified feature" > feat.txt
-  stderr=$("$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
-  staged=$(echo "$stderr" | grep -oE 'staged=[^[:space:]]+' | head -n1 | cut -d= -f2-)
-  pass_input=$(printf '{"session_id":"e2e2","cwd":"%s","tool_response":{"stderr":"%s"}}' "$REPO" "codex-review-capture: staged=$staged")
-  echo "$pass_input" | bash "$DOTFILES/.claude/hooks/codex-gate-pass.sh"
+  reviewed_hash=$(git diff HEAD | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  "$DOTFILES/bin/codex-review-capture" --uncommitted >/dev/null 2>&1
   echo "extra modification" > feat.txt
-  gate_input=$(printf '{"session_id":"e2e2","cwd":"%s"}' "$REPO")
+  gate_input=$(printf '{"cwd":"%s","tool_input":{"command":"git push origin main"}}' "$REPO")
   set +e
   echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
   rc=$?
   set -e
   assert_eq "$rc" "2" "gate blocks (exit 2) when tree diverges from review"
-  rm -f "/tmp/codex-gate-e2e2-${REPO_NAME}"
+  rm -f "/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${reviewed_hash}"
   teardown_repo
 }
 
@@ -313,35 +255,36 @@ test_e2e_commit_review_with_dirty_tree_blocks_unreviewed_commit() {
   echo "reviewed_change" > r.txt
   git add r.txt && git -c user.email=t@t -c user.name=t commit -q -m "reviewed"
   COMMIT=$(git rev-parse HEAD)
+  reviewed_hash=$(git diff "$COMMIT^" "$COMMIT" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
   echo "unreviewed_dirty" > u.txt
   git add u.txt
-  stderr=$("$DOTFILES/bin/codex-review-capture" --commit "$COMMIT" 2>&1 >/dev/null)
-  staged=$(echo "$stderr" | grep -oE 'staged=[^[:space:]]+' | head -n1 | cut -d= -f2-)
-  pass_input=$(printf '{"session_id":"e2e3","cwd":"%s","tool_response":{"stderr":"%s"}}' "$REPO" "codex-review-capture: staged=$staged")
-  echo "$pass_input" | bash "$DOTFILES/.claude/hooks/codex-gate-pass.sh"
+  "$DOTFILES/bin/codex-review-capture" --commit "$COMMIT" >/dev/null 2>&1
   git -c user.email=t@t -c user.name=t commit -q -m "unreviewed"
-  gate_input=$(printf '{"session_id":"e2e3","cwd":"%s"}' "$REPO")
+  gate_input=$(printf '{"cwd":"%s","tool_input":{"command":"git push origin main"}}' "$REPO")
   set +e
   echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
   rc=$?
   set -e
   assert_eq "$rc" "2" "P1 #2: gate blocks when committing unreviewed dirty edits after --commit review"
-  rm -f "/tmp/codex-gate-e2e3-${REPO_NAME}"
+  rm -f "/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${reviewed_hash}"
   teardown_repo
 }
 
-test_gate_blocks_on_malformed_sentinel() {
+test_gate_blocks_on_empty_sentinel_file() {
+  # A reviewed-* file with no BASE line is unverifiable. Gate must skip it
+  # like any other unparseable sentinel and report "no review found" if
+  # nothing else matches.
   setup_repo
   echo "feature" > feat.txt
   git add feat.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
-  # Write a sentinel with only one line (missing the hash)
-  printf 'truncated\n' > "/tmp/codex-gate-malformedsess-${REPO_NAME}"
-  gate_input=$(printf '{"session_id":"malformedsess","cwd":"%s"}' "$REPO")
+  fake_hash="2222222222222222222222222222222222222222222222222222222222222222"
+  : > "/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${fake_hash}"
+  gate_input=$(printf '{"cwd":"%s","tool_input":{"command":"git push origin main"}}' "$REPO")
   set +e
   out=$(echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>&1)
   rc=$?
   set -e
-  assert_eq "$rc" "2" "gate exits 2 on malformed sentinel"
+  assert_eq "$rc" "2" "gate exits 2 when only sentinel on file is empty"
   if echo "$out" | grep -q 'BLOCKED'; then
     printf '  ok stderr says BLOCKED\n'
     PASSED=$((PASSED+1))
@@ -349,7 +292,7 @@ test_gate_blocks_on_malformed_sentinel() {
     printf '  FAIL stderr does not say BLOCKED, got: %s\n' "$out"
     FAILED=$((FAILED+1))
   fi
-  rm -f "/tmp/codex-gate-malformedsess-${REPO_NAME}"
+  rm -f "/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${fake_hash}"
   teardown_repo
 }
 
@@ -534,83 +477,17 @@ test_wrapper_omits_tokens_summary_when_no_session() {
   teardown_repo
 }
 
-test_wrapper_promotes_sentinel_when_claude_session_set() {
-  # When invoked under Claude Code, the wrapper must write the session sentinel
-  # itself: the PostToolUse hook can't see our stderr for background bash tasks
-  # (the bash tool returns immediately with a shell id) so promotion-via-hook
-  # would never fire and the next gated push would block.
-  setup_repo
-  echo "baseline" > foo.txt
-  git add foo.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
-  echo "modified" > foo.txt
-  CLAUDE_CODE_SESSION_ID="sessbg1" "$DOTFILES/bin/codex-review-capture" --uncommitted >/dev/null 2>&1
-  sentinel="/tmp/codex-gate-sessbg1-${REPO_NAME}"
-  assert_file_exists "$sentinel"
-  if [[ -f "$sentinel" ]]; then
-    base=$(sed -n 1p "$sentinel")
-    hash=$(sed -n 2p "$sentinel")
-    expected_base=$(git rev-parse HEAD)
-    expected_hash=$(git diff HEAD | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
-    assert_eq "$base" "$expected_base" "promoted sentinel base = HEAD"
-    assert_eq "$hash" "$expected_hash" "promoted sentinel hash = sha256(git diff HEAD)"
-  fi
-  # And the intermediate staged file must be gone — promotion is a move.
-  shopt -s nullglob
-  leaked=( /tmp/codex-gate-staged-${UID}-${REPO_NAME}-* )
-  shopt -u nullglob
-  assert_eq "${#leaked[@]}" "0" "no staged file left after promotion"
-  rm -f "$sentinel"
-  teardown_repo
-}
-
-test_wrapper_no_sentinel_when_session_set_but_codex_fails() {
+test_wrapper_no_sentinel_when_codex_fails() {
   setup_repo
   echo "x" > x.txt
   git add x.txt
-  CLAUDE_CODE_SESSION_ID="sessbg2" FAKE_CODEX_RC=42 \
-    "$DOTFILES/bin/codex-review-capture" --uncommitted >/dev/null 2>&1 || true
-  assert_no_file "/tmp/codex-gate-sessbg2-${REPO_NAME}"
+  FAKE_CODEX_RC=42 "$DOTFILES/bin/codex-review-capture" --uncommitted >/dev/null 2>&1 || true
   shopt -s nullglob
-  leaked=( /tmp/codex-gate-staged-${UID}-${REPO_NAME}-* )
+  leaked_reviewed=( /tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-* )
+  leaked_staged=( /tmp/codex-gate-staged-${UID}-${REPO_NAME}-* )
   shopt -u nullglob
-  assert_eq "${#leaked[@]}" "0" "staged file also cleaned up on codex failure"
-  teardown_repo
-}
-
-test_e2e_background_invocation_unblocks_gate_without_hook() {
-  # Simulates the bug scenario: Bash(codex-review-capture ..., run_in_background:
-  # true) returns immediately, PostToolUse fires with empty stderr and no-ops.
-  # The wrapper itself must promote the sentinel so the next gated push passes.
-  setup_repo
-  echo "feature" > feat.txt
-  git add feat.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
-  echo "modified feature" > feat.txt
-  CLAUDE_CODE_SESSION_ID="bgsess" "$DOTFILES/bin/codex-review-capture" --uncommitted >/dev/null 2>&1
-  # Deliberately do NOT invoke codex-gate-pass.sh -- in the real bug it sees no
-  # staged= line and exits 0 with nothing done.
-  gate_input=$(printf '{"session_id":"bgsess","cwd":"%s"}' "$REPO")
-  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
-  rc=$?
-  assert_eq "$rc" "0" "gate accepts after background-style wrapper promotion"
-  assert_no_file "/tmp/codex-gate-bgsess-${REPO_NAME}"
-  teardown_repo
-}
-
-test_wrapper_no_sentinel_when_session_unset() {
-  # Legacy / terminal-invocation behavior: no promotion happens in the wrapper;
-  # the staged file is left for the PostToolUse hook to handle (or to expire).
-  setup_repo
-  echo "baseline" > foo.txt
-  git add foo.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
-  echo "modified" > foo.txt
-  stderr=$("$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
-  staged=$(echo "$stderr" | grep -oE 'staged=[^[:space:]]+' | head -n1 | cut -d= -f2-)
-  assert_file_exists "$staged"
-  # No sentinel for any session id we might have used in the wrapper.
-  shopt -s nullglob
-  leaked=( /tmp/codex-gate-*-${REPO_NAME} )
-  shopt -u nullglob
-  assert_eq "${#leaked[@]}" "0" "no sentinel written when CLAUDE_CODE_SESSION_ID unset"
+  assert_eq "${#leaked_reviewed[@]}" "0" "no reviewed sentinel when codex exits nonzero"
+  assert_eq "${#leaked_staged[@]}" "0" "staged file also cleaned up on codex failure"
   teardown_repo
 }
 
@@ -1368,6 +1245,439 @@ test_gate_blocks_push_with_delete_flag_after_simplification() {
   rc=$?
   set -e
   assert_eq "$rc" "2" "gate blocks --delete flag form (any option after push gates)"
+  teardown_repo
+}
+
+test_gate_uv_runs_bashlex_isolated_from_broken_project_pyproject() {
+  # When the hook fires in a project whose pyproject.toml can't be resolved by uv
+  # (platform-conditional deps not on PyPI, broken constraints, etc.), the
+  # bashlex parser path must still run — it doesn't need any project deps, just
+  # `bashlex` via --with. Without project isolation (`--no-project`), uv tries
+  # to resolve the surrounding pyproject and exits nonzero. The gate then falls
+  # through to the sentinel check, over-gating benign commands.
+  setup_repo
+  cat > pyproject.toml <<'PYEOF'
+[project]
+name = "broken"
+version = "0.0.0"
+dependencies = ["this-package-does-not-exist-on-pypi-codexgate-test"]
+PYEOF
+  gate_input=$(printf '{"session_id":"sessUvIso","cwd":"%s","tool_input":{"command":"echo hello"}}' "$REPO")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate uv-runs bashlex isolated from broken surrounding pyproject"
+  teardown_repo
+}
+
+test_wrapper_writes_hash_keyed_reviewed_sentinel() {
+  # After a successful codex review, the wrapper must promote the staged file
+  # to /tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${HASH} with BASE as the
+  # one-line content. Replaces the old session_id-keyed promotion -- the gate
+  # now scans this filename pattern instead of looking up a session-specific
+  # path.
+  setup_repo
+  echo "baseline" > foo.txt
+  git add foo.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
+  echo "modified" > foo.txt
+  expected_base=$(git rev-parse HEAD)
+  expected_hash=$(git diff HEAD | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  "$DOTFILES/bin/codex-review-capture" --uncommitted >/dev/null 2>&1
+  reviewed="/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${expected_hash}"
+  assert_file_exists "$reviewed"
+  if [[ -f "$reviewed" ]]; then
+    assert_eq "$(cat "$reviewed")" "$expected_base" "reviewed sentinel content = BASE"
+  fi
+  # And the intermediate staged file must be gone -- promotion is a move.
+  shopt -s nullglob
+  leaked=( /tmp/codex-gate-staged-${UID}-${REPO_NAME}-* )
+  shopt -u nullglob
+  assert_eq "${#leaked[@]}" "0" "no staged file left after promotion"
+  rm -f "$reviewed"
+  teardown_repo
+}
+
+test_wrapper_refuses_to_write_sentinel_for_empty_diff() {
+  # Pre-existing safety hole exposed during the hash-keyed redesign: a clean
+  # working tree + --uncommitted produces sha256("") as the review hash. The
+  # gate, computing the same hash later against another clean tree, would
+  # match and open the gate -- unblocking the push of any unpushed commits
+  # the codex never saw. Fail closed: refuse to write a sentinel for an
+  # empty diff.
+  setup_repo
+  echo "clean" > foo.txt
+  git add foo.txt && git -c user.email=t@t -c user.name=t commit -q -m "clean"
+  # Working tree is now clean -- `git diff HEAD` is empty.
+  stderr=$("$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null) || true
+  empty_hash="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  assert_no_file "/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${empty_hash}"
+  shopt -s nullglob
+  leaked_staged=( /tmp/codex-gate-staged-${UID}-${REPO_NAME}-* )
+  shopt -u nullglob
+  assert_eq "${#leaked_staged[@]}" "0" "no staged file for empty diff"
+  if echo "$stderr" | grep -q 'empty'; then
+    printf '  ok stderr mentions the empty-diff reason\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL stderr does not explain empty diff\n    stderr:\n%s\n' "$stderr"
+    FAILED=$((FAILED+1))
+  fi
+  teardown_repo
+}
+
+test_wrapper_refuses_empty_diff_for_commit_mode() {
+  # `--commit X` on an --allow-empty commit produces a zero-byte diff that
+  # hashes to sha256(""). Same false-allow risk as --uncommitted on a clean
+  # tree: refuse the sentinel.
+  setup_repo
+  echo "x" > x.txt
+  git add x.txt && git -c user.email=t@t -c user.name=t commit -q -m "x"
+  git -c user.email=t@t -c user.name=t commit -q --allow-empty -m "empty"
+  empty_commit=$(git rev-parse HEAD)
+  empty_hash="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  stderr=$("$DOTFILES/bin/codex-review-capture" --commit "$empty_commit" 2>&1 >/dev/null) || true
+  assert_no_file "/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${empty_hash}"
+  if echo "$stderr" | grep -q 'empty'; then
+    printf '  ok stderr mentions empty diff for --commit on --allow-empty commit\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL stderr does not explain empty diff for --commit\n    stderr:\n%s\n' "$stderr"
+    FAILED=$((FAILED+1))
+  fi
+  teardown_repo
+}
+
+test_wrapper_refuses_empty_diff_for_base_when_merge_base_equals_HEAD() {
+  # `--base HEAD` produces merge-base(HEAD, HEAD) = HEAD, so `git diff HEAD
+  # HEAD` is empty. Same false-allow risk; refuse the sentinel.
+  setup_repo
+  echo "main" > main.txt
+  git add main.txt && git -c user.email=t@t -c user.name=t commit -q -m "main"
+  empty_hash="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  stderr=$("$DOTFILES/bin/codex-review-capture" --base HEAD 2>&1 >/dev/null) || true
+  assert_no_file "/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${empty_hash}"
+  if echo "$stderr" | grep -q 'empty'; then
+    printf '  ok stderr mentions empty diff for --base HEAD (merge-base == HEAD)\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL stderr does not explain empty diff for --base HEAD\n    stderr:\n%s\n' "$stderr"
+    FAILED=$((FAILED+1))
+  fi
+  teardown_repo
+}
+
+test_wrapper_revalidates_cached_base_against_current_tree() {
+  # Cache filename is keyed on diff hash alone, but two different (BASE,
+  # current_tree) pairs can produce the same diff content (e.g., adding the
+  # same new file on different branches with different committed trees).
+  # Without re-validation the wrapper would short-circuit on a sentinel whose
+  # BASE doesn't describe the current tree, and the gate would later block
+  # since `git diff cached_base` against the current tree no longer matches
+  # the cached filename hash. Test: fabricate exactly that mismatch and
+  # confirm the wrapper falls through to codex AND drops the stale cache.
+  setup_repo
+  echo "base content" > a.txt
+  git add a.txt && git -c user.email=t@t -c user.name=t commit -q -m "base"
+  fake_base=$(git rev-parse HEAD)
+  echo "more content" >> a.txt
+  git add a.txt && git -c user.email=t@t -c user.name=t commit -q -m "more"
+  # Current state has more in HEAD than fake_base; staging foo.txt now
+  # gives us a current-tree diff (vs HEAD) whose hash is X, and a
+  # current-tree diff vs fake_base whose hash is Y != X.
+  echo "foo content" > foo.txt
+  git add foo.txt
+  hash_vs_head=$(git diff HEAD | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  hash_vs_fake=$(git diff "$fake_base" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  if [[ "$hash_vs_head" == "$hash_vs_fake" ]]; then
+    printf '  FAIL test setup: failed to construct a stale-cache scenario\n'
+    FAILED=$((FAILED+1))
+    teardown_repo
+    return
+  fi
+  # Plant a cache file whose name matches our --uncommitted hash, but whose
+  # stored BASE produces a different hash against the current tree.
+  cache="/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${hash_vs_head}"
+  printf '%s\n' "$fake_base" > "$cache"
+  stderr=$("$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  rc=$?
+  assert_eq "$rc" "0" "wrapper runs codex (rc=0 from fake) instead of short-circuiting on stale cache"
+  if grep -q "already reviewed" <<<"$stderr"; then
+    printf '  FAIL wrapper short-circuited on stale-content cache\n'
+    FAILED=$((FAILED+1))
+  else
+    printf '  ok wrapper bypassed stale cache and ran codex\n'
+    PASSED=$((PASSED+1))
+  fi
+  # After re-review, the cache should have been updated by the real wrapper
+  # promotion to a sentinel whose BASE produces the matching hash.
+  if [[ -f "$cache" ]]; then
+    final_base=$(cat "$cache")
+    final_check=$(git diff "$final_base" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+    assert_eq "$final_check" "$hash_vs_head" "fresh cache base produces matching hash against current tree"
+  fi
+  rm -f "$cache"
+  teardown_repo
+}
+
+test_wrapper_short_circuits_when_already_reviewed() {
+  # If a reviewed sentinel for this exact diff hash already exists (and the
+  # BASE is still reachable), the wrapper skips codex entirely. Saves an
+  # expensive review for an answer that's already on file.
+  setup_repo
+  echo "baseline" > foo.txt
+  git add foo.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
+  base=$(git rev-parse HEAD)
+  echo "modified" > foo.txt
+  hash=$(git diff HEAD | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  reviewed="/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${hash}"
+  printf '%s\n' "$base" > "$reviewed"
+  # FAKE_CODEX_RC=99 -- if codex were called the wrapper would exit nonzero.
+  # The short-circuit should keep us at exit 0 without invoking codex.
+  stderr=$(FAKE_CODEX_RC=99 "$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  rc=$?
+  assert_eq "$rc" "0" "wrapper exits 0 on cache hit (codex not invoked)"
+  if grep -q "already reviewed" <<<"$stderr"; then
+    printf '  ok wrapper reports already-reviewed status\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL no already-reviewed stderr message\n    stderr:\n%s\n' "$stderr"
+    FAILED=$((FAILED+1))
+  fi
+  assert_file_exists "$reviewed"
+  rm -f "$reviewed"
+  teardown_repo
+}
+
+test_wrapper_does_not_short_circuit_when_cache_base_unreachable() {
+  # A cached sentinel pointing at a base that's been rebased/reset away is
+  # unverifiable -- the gate would skip it too. Don't short-circuit in that
+  # case; run codex afresh.
+  setup_repo
+  echo "baseline" > foo.txt
+  git add foo.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
+  echo "modified" > foo.txt
+  hash=$(git diff HEAD | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  reviewed="/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${hash}"
+  printf 'deadbeefcafebabe1234567890abcdef12345678\n' > "$reviewed"  # nonexistent base
+  stderr=$("$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  rc=$?
+  assert_eq "$rc" "0" "wrapper runs codex (rc=0 from fake) when cached base is unreachable"
+  if grep -q "already reviewed" <<<"$stderr"; then
+    printf '  FAIL wrapper short-circuited on stale-base cache hit\n'
+    FAILED=$((FAILED+1))
+  else
+    printf '  ok wrapper bypassed stale-base cache and ran codex\n'
+    PASSED=$((PASSED+1))
+  fi
+  rm -f "$reviewed"
+  teardown_repo
+}
+
+test_gate_allows_when_hash_keyed_sentinel_matches() {
+  setup_repo
+  echo "baseline" > foo.txt
+  git add foo.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
+  base=$(git rev-parse HEAD)
+  echo "modified" > foo.txt
+  hash=$(git diff "$base" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  reviewed="/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${hash}"
+  printf '%s\n' "$base" > "$reviewed"
+  gate_input=$(printf '{"cwd":"%s","tool_input":{"command":"git push origin main"}}' "$REPO")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate allows push when hash-keyed sentinel matches current diff"
+  # Sentinel is NOT consumed on match: a single review covers the full ship
+  # sequence (git push + gh pr create). The sentinel becomes invalid the
+  # moment the diff changes, since the new hash won't match its filename.
+  assert_file_exists "$reviewed"
+  rm -f "$reviewed"
+  teardown_repo
+}
+
+test_gate_allows_repeated_calls_until_diff_changes() {
+  # The real ship workflow: codex-review-capture, then `git push`, then
+  # `gh pr create`. Both gated calls must pass on one review.
+  setup_repo
+  echo "baseline" > foo.txt
+  git add foo.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
+  base=$(git rev-parse HEAD)
+  echo "modified" > foo.txt
+  hash=$(git diff "$base" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  reviewed="/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${hash}"
+  printf '%s\n' "$base" > "$reviewed"
+
+  push_input=$(printf '{"cwd":"%s","tool_input":{"command":"git push origin main"}}' "$REPO")
+  echo "$push_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc1=$?
+  assert_eq "$rc1" "0" "first gated call (git push) passes on the review"
+  assert_file_exists "$reviewed"
+
+  pr_input=$(printf '{"cwd":"%s","tool_input":{"command":"gh pr create --title foo"}}' "$REPO")
+  echo "$pr_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc2=$?
+  assert_eq "$rc2" "0" "second gated call (gh pr create) also passes on the same review"
+  assert_file_exists "$reviewed"
+
+  # Now mutate the tree -- sentinel becomes invalid.
+  echo "further modified" > foo.txt
+  set +e
+  echo "$push_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc3=$?
+  set -e
+  assert_eq "$rc3" "2" "gate blocks once the diff drifts past the reviewed hash"
+
+  rm -f "$reviewed"
+  teardown_repo
+}
+
+test_gate_blocks_when_no_reviewed_sentinel_exists() {
+  setup_repo
+  echo "baseline" > foo.txt
+  git add foo.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
+  echo "modified" > foo.txt
+  gate_input=$(printf '{"cwd":"%s","tool_input":{"command":"git push origin main"}}' "$REPO")
+  set +e
+  out=$(echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>&1)
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate blocks push when no reviewed sentinel exists"
+  if echo "$out" | grep -q 'No codex review found'; then
+    printf '  ok stderr reports "no review found"\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL stderr does not say "no review found"; got: %s\n' "$out"
+    FAILED=$((FAILED+1))
+  fi
+  teardown_repo
+}
+
+test_gate_blocks_when_hash_differs_from_current_tree() {
+  setup_repo
+  echo "baseline" > foo.txt
+  git add foo.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
+  base=$(git rev-parse HEAD)
+  echo "originally modified" > foo.txt
+  hash=$(git diff "$base" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  reviewed="/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${hash}"
+  printf '%s\n' "$base" > "$reviewed"
+  # Now further-modify the tree so the diff hash changes.
+  echo "further modified" > foo.txt
+  gate_input=$(printf '{"cwd":"%s","tool_input":{"command":"git push origin main"}}' "$REPO")
+  set +e
+  out=$(echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>&1)
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate blocks when tree diverged from reviewed hash"
+  if echo "$out" | grep -q 'changed'; then
+    printf '  ok stderr explains the diff drifted\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL stderr does not mention the diff changing; got: %s\n' "$out"
+    FAILED=$((FAILED+1))
+  fi
+  assert_file_exists "$reviewed"  # un-consumed on block
+  rm -f "$reviewed"
+  teardown_repo
+}
+
+test_gate_handles_multiple_reviewed_sentinels() {
+  # Two reviews on file at different bases (initial commit vs main). Both
+  # describe valid views of the current diff. Gate finds one and allows.
+  setup_repo
+  init_commit=$(git rev-parse HEAD)
+  echo "main_change" > m.txt
+  git add m.txt && git -c user.email=t@t -c user.name=t commit -q -m "main"
+  git checkout -q -b feature
+  echo "feat" > f.txt
+  git add f.txt && git -c user.email=t@t -c user.name=t commit -q -m "feat"
+  base1=$(git rev-parse main)        # merge-base view: diff just the feat commit
+  base2="$init_commit"                # full-history view: main + feat
+  hash1=$(git diff "$base1" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  hash2=$(git diff "$base2" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  # Sanity: confirm we picked two genuinely different diffs.
+  if [[ "$hash1" == "$hash2" ]]; then
+    printf '  FAIL test setup: chose two bases producing the same hash\n'
+    FAILED=$((FAILED+1))
+    teardown_repo
+    return
+  fi
+  r1="/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${hash1}"
+  r2="/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${hash2}"
+  printf '%s\n' "$base1" > "$r1"
+  printf '%s\n' "$base2" > "$r2"
+  gate_input=$(printf '{"cwd":"%s","tool_input":{"command":"git push origin feature"}}' "$REPO")
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh"
+  rc=$?
+  assert_eq "$rc" "0" "gate allows when at least one of multiple sentinels matches"
+  # Sentinels survive (no consume-on-match).
+  assert_file_exists "$r1"
+  assert_file_exists "$r2"
+  rm -f "$r1" "$r2"
+  teardown_repo
+}
+
+test_gate_skips_sentinel_with_unreachable_base() {
+  # A sentinel whose BASE has been rebased/reset away can't be hash-validated.
+  # The gate must skip it (not blow up) and report "no codex review found" if
+  # no other valid sentinel exists. Also: the file should NOT be deleted by
+  # the gate; that would clobber a sentinel a different worktree might still
+  # validate.
+  setup_repo
+  echo "baseline" > foo.txt
+  git add foo.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
+  echo "modified" > foo.txt
+  fake_hash="0000000000000000000000000000000000000000000000000000000000000000"
+  reviewed="/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${fake_hash}"
+  printf 'deadbeefcafebabe1234567890abcdef12345678\n' > "$reviewed"
+  gate_input=$(printf '{"cwd":"%s","tool_input":{"command":"git push origin main"}}' "$REPO")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate blocks (no valid sentinel) when only stale-base file present"
+  assert_file_exists "$reviewed"
+  rm -f "$reviewed"
+  teardown_repo
+}
+
+test_gate_skips_empty_sentinel_file() {
+  # An empty file (no BASE line) is meaningless. Skip it like any other
+  # unverifiable sentinel.
+  setup_repo
+  echo "baseline" > foo.txt
+  git add foo.txt && git -c user.email=t@t -c user.name=t commit -q -m "baseline"
+  echo "modified" > foo.txt
+  fake_hash="1111111111111111111111111111111111111111111111111111111111111111"
+  reviewed="/tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-${fake_hash}"
+  : > "$reviewed"  # empty file
+  gate_input=$(printf '{"cwd":"%s","tool_input":{"command":"git push origin main"}}' "$REPO")
+  set +e
+  echo "$gate_input" | bash "$DOTFILES/.claude/hooks/codex-gate.sh" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "$rc" "2" "gate blocks on empty sentinel file"
+  rm -f "$reviewed"
+  teardown_repo
+}
+
+test_pass_hook_is_noop() {
+  # Wrapper now promotes its own sentinel directly. PostToolUse hook is kept
+  # only so legacy settings entries don't break; it must do nothing.
+  setup_repo
+  staged="/tmp/codex-gate-staged-${UID}-${REPO_NAME}-99999"
+  printf 'somebase\n' > "$staged"
+  input=$(printf '{"session_id":"x","cwd":"%s","tool_response":{"stderr":"codex-review-capture: staged=%s"}}' "$REPO" "$staged")
+  echo "$input" | bash "$DOTFILES/.claude/hooks/codex-gate-pass.sh"
+  rc=$?
+  assert_eq "$rc" "0" "pass hook exits 0"
+  # Hook must not have moved the staged file
+  assert_file_exists "$staged"
+  # Hook must not have created any session-keyed or reviewed-keyed sentinel
+  assert_no_file "/tmp/codex-gate-x-${REPO_NAME}"
+  shopt -s nullglob
+  reviewed_leaked=( /tmp/codex-gate-reviewed-${UID}-${REPO_NAME}-* )
+  shopt -u nullglob
+  assert_eq "${#reviewed_leaked[@]}" "0" "pass hook did not create any reviewed sentinel"
+  rm -f "$staged"
   teardown_repo
 }
 

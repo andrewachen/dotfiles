@@ -1,29 +1,11 @@
 #!/usr/bin/env bash
-# ABOUTME: PostToolUse hook promoting a codex-review-capture staged file into a
-# ABOUTME: session-keyed sentinel that codex-gate.sh verifies on the next gate.
+# ABOUTME: No-op PostToolUse hook kept for legacy settings compatibility. The
+# ABOUTME: wrapper now promotes its hash-keyed sentinel directly; this is dead.
 
-set -euo pipefail
-
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "codex-gate-pass: requires python3 to parse hook input" >&2
-    exit 1
-fi
-_stderr_field() { python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("tool_response") or {}; print(r.get("stderr",""))'; }
-_top_field() { python3 -c 'import json,sys; print(json.load(sys.stdin).get(sys.argv[1], sys.argv[2]))' "$1" "${2:-}"; }
-
-INPUT=$(cat)
-SESSION_ID=$(echo "$INPUT" | _top_field session_id nosession)
-CWD=$(echo "$INPUT" | _top_field cwd)
-
-cd "$CWD" 2>/dev/null || exit 0
-git rev-parse --show-toplevel >/dev/null 2>&1 || exit 0
-
-REPO_NAME=$(basename "$(git rev-parse --show-toplevel)")
-
-STDERR=$(echo "$INPUT" | _stderr_field)
-STAGED=$(echo "$STDERR" | grep -oE 'staged=[^[:space:]]+' | head -n1 | cut -d= -f2- || true)
-
-[[ -z "$STAGED" ]] && exit 0
-[[ ! -f "$STAGED" ]] && exit 0
-
-mv "$STAGED" "/tmp/codex-gate-${SESSION_ID}-${REPO_NAME}"
+# codex-review-capture used to leave a staged file behind and rely on this
+# hook to read its stderr, find the `staged=...` marker, and `mv` the file to
+# a session_id-keyed sentinel that the gate would later consume. With the
+# hash-keyed sentinel design (filename encodes sha256 of the reviewed diff),
+# the wrapper writes its own final sentinel and this hook has nothing to do.
+# Kept as a no-op so existing settings.json entries don't fail loudly.
+exit 0

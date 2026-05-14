@@ -1,10 +1,10 @@
 #!/bin/bash
 # ABOUTME: Wrapper around `codex review` that captures the full transcript to
-# ABOUTME: a /tmp file (owner-only, auto-cleaned on reboot) and prints only the
-# ABOUTME: verdict -- content after the last `^codex$` marker -- to stdout.
-# ABOUTME: After a successful review with a recognized mode flag, also writes
-# ABOUTME: a staged file that codex-gate-pass.sh promotes into a session-keyed
-# ABOUTME: sentinel for codex-gate.sh.
+# ABOUTME: a /tmp file (owner-only, auto-cleaned on reboot), prints only the
+# ABOUTME: verdict -- content after the last `^codex$` marker -- to stdout, and
+# ABOUTME: after a successful review with a recognized mode flag, promotes a
+# ABOUTME: hash-keyed sentinel file that codex-gate.sh uses to admit one
+# ABOUTME: subsequent push/pr-create of the reviewed diff.
 
 set -uo pipefail
 
@@ -75,10 +75,56 @@ if topdir=$(git rev-parse --show-toplevel 2>/dev/null); then
     esac
 fi
 
+# Refuse to write a sentinel for an empty diff. sha256 of empty input is a
+# well-known constant; the gate would otherwise allow a push from any clean
+# tree state (regardless of which commits are about to be pushed), since
+# `git diff HEAD` on a clean tree is empty and re-hashes to the same value.
+# Pre-existing safety hole; closed during the hash-keyed redesign.
+EMPTY_DIFF_HASH="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+if [[ -n "$review_hash" && "$review_hash" == "$EMPTY_DIFF_HASH" ]]; then
+    printf 'codex-review-capture: review diff is empty; refusing to write gate sentinel.\n' >&2
+    printf 'There is nothing for codex to verify, and an empty-diff sentinel would\n' >&2
+    printf 'false-allow any push from this clean state.\n' >&2
+    review_base=""
+    review_hash=""
+fi
+
+# Short-circuit if this exact diff hash has already been reviewed (and the
+# cache is verifiable against the current tree). The wrapper does NOT replay
+# the original verdict -- if you need fresh findings, delete the cached file
+# -- but the gate is unblocked since the safety property (codex saw this
+# diff content) holds.
+#
+# Re-validate the cached BASE against the current tree before trusting the
+# cache. The cache filename keys on diff hash alone; two different (base,
+# current_tree) pairs can produce the same diff content (e.g., adding an
+# identical new file on different branches with different committed trees).
+# Without re-validation we'd short-circuit on a sentinel whose BASE doesn't
+# describe the current tree, and the gate would later block because `git diff
+# cached_base` against the current tree produces a hash that doesn't match
+# the cache filename.
+if [[ -n "$review_base" && -n "$review_hash" && -n "$repo_name" ]]; then
+    cached="/tmp/codex-gate-reviewed-${UID}-${repo_name}-${review_hash}"
+    if [[ -f "$cached" ]]; then
+        cached_base=$(< "$cached")
+        if git rev-parse --verify "${cached_base}^{commit}" >/dev/null 2>&1; then
+            cached_diff_hash=$(git diff "$cached_base" 2>/dev/null | _sha256) || cached_diff_hash=""
+            if [[ "$cached_diff_hash" == "$review_hash" ]]; then
+                printf 'codex-review-capture: hash %s already reviewed; gate unblocked.\n' "${review_hash:0:12}" >&2
+                printf 'Delete %s to force a fresh review.\n' "$cached" >&2
+                exit 0
+            fi
+        fi
+        # Cache is unusable -- unreachable base, or stale base that no longer
+        # produces a matching hash against the current tree. Drop it.
+        rm -f "$cached"
+    fi
+fi
+
 staged=""
 if [[ -n "$review_base" && -n "$review_hash" && -n "$repo_name" ]]; then
     staged="/tmp/codex-gate-staged-${UID}-${repo_name}-$$"
-    printf '%s\n%s\n' "$review_base" "$review_hash" > "$staged"
+    printf '%s\n' "$review_base" > "$staged"
     printf 'codex-review-capture: staged=%s\n' "$staged" >&2
 fi
 
@@ -256,18 +302,13 @@ if [[ $rc -ne 0 && -n "$staged" ]]; then
     rm -f "$staged"
 fi
 
-# When invoked from Claude Code, promote the staged file to the session-keyed
-# sentinel ourselves. The companion PostToolUse hook (codex-gate-pass.sh)
-# normally does this by parsing our stderr, but for `run_in_background: true`
-# bash tasks the hook fires on the immediate tool return (with the shell id),
-# before our stderr is captured -- so it sees an empty `staged=` and no-ops.
-# Doing the mv here also runs for foreground; the hook then sees the staged
-# file is gone and exits cleanly.
-if [[ -n "${CLAUDE_CODE_SESSION_ID:-}" && -n "$staged" && -f "$staged" ]]; then
-    if ! mv "$staged" "/tmp/codex-gate-${CLAUDE_CODE_SESSION_ID}-${repo_name}"; then
-        # Don't fail the wrapper -- codex itself succeeded. But surface the
-        # promotion failure so the user isn't surprised by "No codex review
-        # found" on the next push.
+# Promote the staged file to its hash-keyed reviewed sentinel. No env vars,
+# no session id, no JSON channel: the filename suffix encodes the diff hash
+# (already in $review_hash) and the gate scans for any file matching its
+# own recomputed hash. Works identically for foreground and background tool
+# calls.
+if [[ -n "$staged" && -f "$staged" && -n "$review_hash" ]]; then
+    if ! mv "$staged" "/tmp/codex-gate-reviewed-${UID}-${repo_name}-${review_hash}"; then
         printf 'codex-review-capture: failed to promote staged file to sentinel\n' >&2
     fi
 fi
