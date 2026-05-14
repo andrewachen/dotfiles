@@ -136,8 +136,16 @@ printf 'codex-review-capture: full transcript -> %s\n' "$output" >&2
 # BSD/macOS; `-newermt "@<epoch>"` is not (the @epoch time syntax is GNU-only).
 review_marker=$(mktemp -t codex-review-start.XXXXXXXX)
 
+# Wallclock around `codex review` so the tokens summary can report how long
+# the run actually took. Clamp at zero in case the clock went backwards
+# (NTP step, manual `date` set, suspend/resume) -- format_elapsed prints
+# negative values literally, and a negative elapsed would also fail the
+# test's `elapsed=[0-9]+s` regex.
+review_start=$(date +%s)
 codex review "$@" >"$output" 2>&1
 rc=$?
+review_elapsed=$(( $(date +%s) - review_start ))
+(( review_elapsed < 0 )) && review_elapsed=0
 
 # Insert thousands separators into a non-negative integer string.
 commafy() {
@@ -147,6 +155,19 @@ commafy() {
         n="${n:0:${#n}-3}"
     done
     printf '%s%s' "$n" "$r"
+}
+
+# Format a non-negative integer of seconds as a compact duration:
+# 47 -> "47s", 134 -> "2m14s", 3725 -> "1h02m05s".
+format_elapsed() {
+    local secs="$1"
+    if (( secs < 60 )); then
+        printf '%ds' "$secs"
+    elif (( secs < 3600 )); then
+        printf '%dm%02ds' $((secs / 60)) $((secs % 60))
+    else
+        printf '%dh%02dm%02ds' $((secs / 3600)) $(((secs % 3600) / 60)) $((secs % 60))
+    fi
 }
 
 # OpenAI standard-tier prices per 1M tokens: "<short_in> <short_cached> <short_out> <long_in> <long_cached> <long_out>".
@@ -292,6 +313,12 @@ PYEOF
         fi
     fi
     [[ -n "$model" ]] && summary+=" model=$model"
+    # Elapsed lives on the tokens line by design: callers (the codex-review
+    # skill) pass this line through verbatim, and bundling avoids a second
+    # stderr line. The coupling means an early `return 0` above also
+    # suppresses elapsed; intentional (no point reporting timing on
+    # transcripts the wrapper couldn't measure).
+    summary+=" elapsed=$(format_elapsed "$review_elapsed")"
 
     printf 'codex-review-capture: tokens %s\n' "$summary" >&2
 }

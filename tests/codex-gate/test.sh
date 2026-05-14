@@ -296,6 +296,24 @@ test_gate_blocks_on_empty_sentinel_file() {
   teardown_repo
 }
 
+test_wrapper_includes_elapsed_in_tokens_summary() {
+  # Pin the format shape, not just presence: the duration must match one of
+  # the three branches of `format_elapsed` (Ns / NmNNs / NhNNmNNs). Catches
+  # a regression where a buggy formatter prints `0s` for every input.
+  setup_repo
+  echo "x" > x.txt
+  git add x.txt
+  stderr=$(FAKE_CODEX_TOKENS="100 50 200 30 330" "$DOTFILES/bin/codex-review-capture" --uncommitted 2>&1 >/dev/null)
+  if echo "$stderr" | grep -qE 'codex-review-capture: tokens .* elapsed=([0-9]+s|[0-9]+m[0-9]{2}s|[0-9]+h[0-9]{2}m[0-9]{2}s)( |$)'; then
+    printf '  ok tokens line includes elapsed= field in a valid format\n'
+    PASSED=$((PASSED+1))
+  else
+    printf '  FAIL no elapsed= field in tokens line (or wrong format)\n    stderr:\n%s\n' "$stderr"
+    FAILED=$((FAILED+1))
+  fi
+  teardown_repo
+}
+
 test_wrapper_emits_tokens_summary_from_session() {
   setup_repo
   echo "x" > x.txt
