@@ -20,7 +20,7 @@ Use the `codex-review-capture` wrapper (in `~/bin/`, installed from the dotfiles
 
 ### 1. Start the wrapper in the background
 
-Codex only reads the working tree, so no permission prompts are needed beyond the single `Bash(codex-review-capture *)` allowlist rule.
+Codex only reads the working tree, so the allowlist rules needed are `Bash(codex-review-capture *)` (to launch) and `TaskOutput` (to read the verdict — the background bash is registered as a Task, and the UI labels this prompt "Read agent output").
 
 ```bash
 codex-review-capture --commit HEAD
