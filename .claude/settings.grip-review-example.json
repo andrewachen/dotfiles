@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/home/achen/.claude/skills/grip-review/serve.sh *)"
+    ]
+  },
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/achen/.claude/hooks/cleanup-grip.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
