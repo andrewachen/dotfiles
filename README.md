@@ -26,12 +26,21 @@ mkdir -p ~/.claude/skills
 
 ln -sf "$PWD/.claude/CLAUDE.md" ~/.claude/CLAUDE.md
 
-for s in codex-review java-style; do
+for s in codex-review java-style grip-review; do
   ln -sf "$PWD/.claude/skills/$s" "$HOME/.claude/skills/$s"
 done
 ```
 
 This coexists with the Superpowers plugin skills and any other skill dirs under `~/.claude/skills/`.
+
+The grip-review skill also needs its SessionEnd hook symlinked:
+
+```bash
+mkdir -p ~/.claude/hooks
+ln -sf "$PWD/.claude/hooks/cleanup-grip.sh" "$HOME/.claude/hooks/cleanup-grip.sh"
+```
+
+Then merge `.claude/settings.grip-review-example.json` into your live `~/.claude/settings.json` (the live file is intentionally not tracked; the example shows the allow rule and the SessionEnd hook entry to add).
 
 ### Helper scripts: symlink from ~/bin
 
