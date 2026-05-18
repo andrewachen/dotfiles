@@ -94,6 +94,56 @@ fi
 rm -f "$PID_FILE"
 rm -f "$MD"
 
+# --- Test: re-invocation kills the prior grip from the same session ---
+MD2=$(mktemp --suffix=.md); echo "# a" > "$MD2"
+MD3=$(mktemp --suffix=.md); echo "# b" > "$MD3"
+
+"$SERVE" "$MD2" >/dev/null
+PID_FILE="$XDG_CACHE_HOME/claude-grip/$CLAUDE_CODE_SESSION_ID.pid"
+FIRST_PID=$(awk '{print $1}' "$PID_FILE")
+
+"$SERVE" "$MD3" >/dev/null
+SECOND_PID=$(awk '{print $1}' "$PID_FILE")
+
+if [ "$FIRST_PID" != "$SECOND_PID" ]; then
+  PASS=$((PASS+1)); echo "  PASS: re-invocation rotates PID"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: PID did not change ($FIRST_PID)"
+fi
+
+# Give the kill signal a moment to deliver, then verify the old PID is gone.
+sleep 0.2
+if kill -0 "$FIRST_PID" 2>/dev/null; then
+  FAIL=$((FAIL+1)); echo "  FAIL: first grip still alive ($FIRST_PID)"
+else
+  PASS=$((PASS+1)); echo "  PASS: first grip killed"
+fi
+
+kill "$SECOND_PID" 2>/dev/null
+rm -f "$PID_FILE" "$MD2" "$MD3"
+
+# --- Test: stale PID file with mismatched starttime does NOT kill unrelated process ---
+sleep 60 &
+VICTIM=$!
+mkdir -p "$XDG_CACHE_HOME/claude-grip"
+VICT_PID_FILE="$XDG_CACHE_HOME/claude-grip/stale-victim.pid"
+# Real starttimes are millions of clock ticks; "1" cannot match.
+echo "$VICTIM 1" > "$VICT_PID_FILE"
+
+MD_VICT=$(mktemp --suffix=.md); echo "# v" > "$MD_VICT"
+CLAUDE_CODE_SESSION_ID=stale-victim "$SERVE" "$MD_VICT" >/dev/null
+
+if kill -0 "$VICTIM" 2>/dev/null; then
+  PASS=$((PASS+1)); echo "  PASS: stale PID+starttime did not kill victim"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: victim process was killed by stale PID file"
+fi
+
+# Cleanup: kill the victim sleep and the new grip started by the call above.
+kill "$VICTIM" 2>/dev/null
+[ -f "$VICT_PID_FILE" ] && kill "$(awk '{print $1}' "$VICT_PID_FILE")" 2>/dev/null
+rm -f "$VICT_PID_FILE" "$MD_VICT"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 exit "$FAIL"

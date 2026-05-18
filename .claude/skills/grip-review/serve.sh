@@ -43,6 +43,18 @@ pid_starttime() {
   awk '{print $22}' "/proc/$1/stat" 2>/dev/null
 }
 
+# Kill any prior grip from this same Claude session.
+# Verify the recorded starttime still matches before signalling — if the
+# previous grip died and Linux recycled its PID, the starttime will differ
+# and we leave that unrelated process alone.
+if [ -f "$PID_FILE" ]; then
+  read -r PRIOR_PID PRIOR_START < "$PID_FILE" 2>/dev/null || PRIOR_PID=""
+  if [ -n "$PRIOR_PID" ] && [ "$(pid_starttime "$PRIOR_PID")" = "$PRIOR_START" ]; then
+    kill "$PRIOR_PID" 2>/dev/null || true
+  fi
+  rm -f "$PID_FILE"
+fi
+
 PORT=$(pick_port)
 "$GRIP" -p "$PORT" "$FILE" >"$LOG_FILE" 2>&1 &
 GRIP_PID=$!
