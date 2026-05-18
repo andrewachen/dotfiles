@@ -56,24 +56,29 @@ if [ -f "$PID_FILE" ]; then
 fi
 
 PORT=$(pick_port)
-"$GRIP" -p "$PORT" "$FILE" >"$LOG_FILE" 2>&1 &
-GRIP_PID=$!
 
-# Give grip a moment to bind and print its banner.
-sleep 0.5
+URL=""
+for ATTEMPT in 0 1 2 3 4; do
+  TRY_PORT=$((PORT + ATTEMPT))
+  : > "$LOG_FILE"
+  "$GRIP" -p "$TRY_PORT" "$FILE" >"$LOG_FILE" 2>&1 &
+  GRIP_PID=$!
+  sleep 0.5
 
-if ! kill -0 "$GRIP_PID" 2>/dev/null; then
-  echo "grip-review: grip exited immediately; see $LOG_FILE" >&2
-  exit 1
-fi
+  if kill -0 "$GRIP_PID" 2>/dev/null; then
+    URL=$(grep -oE 'http://[^[:space:]]+' "$LOG_FILE" | head -1)
+    if [ -n "$URL" ]; then
+      echo "$GRIP_PID $(pid_starttime "$GRIP_PID")" > "$PID_FILE"
+      break
+    fi
+    # Process alive but no URL — kill and treat as failure.
+    kill "$GRIP_PID" 2>/dev/null
+  fi
+  GRIP_PID=""
+done
 
-echo "$GRIP_PID $(pid_starttime "$GRIP_PID")" > "$PID_FILE"
-
-URL=$(grep -oE 'http://[^[:space:]]+' "$LOG_FILE" | head -1)
 if [ -z "$URL" ]; then
-  echo "grip-review: could not extract URL from grip output; see $LOG_FILE" >&2
-  kill "$GRIP_PID" 2>/dev/null
-  rm -f "$PID_FILE"
+  echo "grip-review: could not launch grip after 5 port attempts starting at $PORT; see $LOG_FILE" >&2
   exit 1
 fi
 

@@ -144,6 +144,29 @@ kill "$VICTIM" 2>/dev/null
 [ -f "$VICT_PID_FILE" ] && kill "$(awk '{print $1}' "$VICT_PID_FILE")" 2>/dev/null
 rm -f "$VICT_PID_FILE" "$MD_VICT"
 
+# --- Test: port collision triggers retry on next port ---
+MD4=$(mktemp --suffix=.md); echo "# c" > "$MD4"
+PRIMARY=$(CLAUDE_CODE_SESSION_ID=collision-session "$SERVE" --dry-run-port)
+export FAKE_GRIP_FAIL_PORT="$PRIMARY"
+URL_C=$(CLAUDE_CODE_SESSION_ID=collision-session "$SERVE" "$MD4")
+unset FAKE_GRIP_FAIL_PORT
+
+assert_contains "retry produced a URL" "$URL_C" "http://"
+# Retry should land on PRIMARY+1
+EXPECTED_PORT=$((PRIMARY + 1))
+assert_contains "retry used next port" "$URL_C" ":$EXPECTED_PORT/"
+
+# Regression check: serve.sh must emit exactly ONE URL line on stdout
+# (caught a bug where the retry loop and the old single-shot extraction
+# both echoed, producing two URLs per successful invocation).
+URL_LINES=$(printf '%s\n' "$URL_C" | grep -c '^http')
+assert_eq "single URL line on stdout" "$URL_LINES" "1"
+
+# Cleanup
+RETRY_PID_FILE="$XDG_CACHE_HOME/claude-grip/collision-session.pid"
+[ -f "$RETRY_PID_FILE" ] && kill "$(awk '{print $1}' "$RETRY_PID_FILE")" 2>/dev/null
+rm -f "$RETRY_PID_FILE" "$MD4"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 exit "$FAIL"
