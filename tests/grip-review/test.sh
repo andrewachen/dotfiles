@@ -167,6 +167,47 @@ RETRY_PID_FILE="$XDG_CACHE_HOME/claude-grip/collision-session.pid"
 [ -f "$RETRY_PID_FILE" ] && kill "$(awk '{print $1}' "$RETRY_PID_FILE")" 2>/dev/null
 rm -f "$RETRY_PID_FILE" "$MD4"
 
+# --- Test: cleanup-grip.sh kills the session's grip and removes the PID file ---
+HOOK="$DOTFILES/.claude/hooks/cleanup-grip.sh"
+MD5=$(mktemp --suffix=.md); echo "# d" > "$MD5"
+CLAUDE_CODE_SESSION_ID=cleanup-test "$SERVE" "$MD5" >/dev/null
+CLEAN_PID_FILE="$XDG_CACHE_HOME/claude-grip/cleanup-test.pid"
+CLEAN_PID=$(awk '{print $1}' "$CLEAN_PID_FILE")
+
+# Hook reads JSON from stdin (Claude Code passes session info); pass minimal valid JSON.
+echo '{"session_id":"cleanup-test"}' | CLAUDE_CODE_SESSION_ID=cleanup-test "$HOOK"
+
+sleep 0.2
+if kill -0 "$CLEAN_PID" 2>/dev/null; then
+  FAIL=$((FAIL+1)); echo "  FAIL: hook did not kill grip ($CLEAN_PID)"
+else
+  PASS=$((PASS+1)); echo "  PASS: hook killed grip"
+fi
+if [ -f "$CLEAN_PID_FILE" ]; then
+  FAIL=$((FAIL+1)); echo "  FAIL: hook did not remove PID file"
+else
+  PASS=$((PASS+1)); echo "  PASS: hook removed PID file"
+fi
+
+rm -f "$MD5"
+
+# --- Test: hook with mismatched starttime does NOT kill unrelated process ---
+sleep 60 &
+HOOK_VICTIM=$!
+HOOK_VICT_FILE="$XDG_CACHE_HOME/claude-grip/hook-victim.pid"
+echo "$HOOK_VICTIM 1" > "$HOOK_VICT_FILE"
+
+echo '{"session_id":"hook-victim"}' | CLAUDE_CODE_SESSION_ID=hook-victim "$HOOK"
+
+if kill -0 "$HOOK_VICTIM" 2>/dev/null; then
+  PASS=$((PASS+1)); echo "  PASS: hook skipped kill on stale starttime"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: hook killed victim on stale starttime"
+fi
+
+kill "$HOOK_VICTIM" 2>/dev/null
+rm -f "$HOOK_VICT_FILE"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 exit "$FAIL"
