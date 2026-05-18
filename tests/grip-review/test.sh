@@ -64,6 +64,36 @@ else
   FAIL=$((FAIL+1)); echo "  FAIL: port $PORT_A out of range 6420-7419"
 fi
 
+# --- Test: launch grip, capture URL, write PID file ---
+MD=$(mktemp --suffix=.md)
+echo "# hello" > "$MD"
+
+URL=$("$SERVE" "$MD")
+assert_contains "URL printed to stdout" "$URL" "http://"
+assert_contains "URL contains a port" "$URL" ":"
+
+PID_FILE="$XDG_CACHE_HOME/claude-grip/$CLAUDE_CODE_SESSION_ID.pid"
+if [ -f "$PID_FILE" ]; then
+  PASS=$((PASS+1)); echo "  PASS: PID file created"
+  # PID file format is "PID STARTTIME" — read just the PID.
+  GRIP_PID=$(awk '{print $1}' "$PID_FILE")
+  if kill -0 "$GRIP_PID" 2>/dev/null; then
+    PASS=$((PASS+1)); echo "  PASS: grip process alive"
+  else
+    FAIL=$((FAIL+1)); echo "  FAIL: grip process not alive (pid $GRIP_PID)"
+  fi
+  # PID file must have two whitespace-separated fields.
+  FIELDS=$(awk '{print NF}' "$PID_FILE")
+  assert_eq "PID file has 2 fields (pid+starttime)" "$FIELDS" "2"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: PID file not at $PID_FILE"
+fi
+
+# Clean up this test's grip so subsequent tests start fresh.
+[ -f "$PID_FILE" ] && kill "$(awk '{print $1}' "$PID_FILE")" 2>/dev/null
+rm -f "$PID_FILE"
+rm -f "$MD"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 exit "$FAIL"
