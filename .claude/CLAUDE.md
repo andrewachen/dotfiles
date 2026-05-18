@@ -132,3 +132,4 @@ For complete methodology, see the systematic-debugging skill
 - NEVER remove code comments unless you can PROVE they are actively false.
 - NEVER make code changes unrelated to the current task. Document follow-ups in the journal rather than fixing them inline.
 - On `/compact`, focus the summary on the current conversation, recent and significant learnings, and what's next. Aggressively summarize older tasks to leave more context for recent ones.
+- When inspecting the exit code of a previous bash command, use EXACTLY `echo "EXIT=$?"` — same casing, same label, same quoting. Variants (`echo "exit=$?"`, `echo "Exit: $?"`, `echo $?`, etc.) each register as distinct permission rules and re-trigger prompts. The canonical form is on the allowlist.
