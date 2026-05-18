@@ -43,7 +43,26 @@ assert_contains() {
   fi
 }
 
-echo "(no tests yet — added by later tasks)"
+# --- Test: --dry-run-port mode emits deterministic port for a given session id ---
+PORT_A=$(CLAUDE_CODE_SESSION_ID=fixed-id-A "$SERVE" --dry-run-port)
+PORT_B=$(CLAUDE_CODE_SESSION_ID=fixed-id-A "$SERVE" --dry-run-port)
+PORT_C=$(CLAUDE_CODE_SESSION_ID=fixed-id-B "$SERVE" --dry-run-port)
+
+assert_eq "same session id -> same port"     "$PORT_A" "$PORT_B"
+# Different session ids should (almost always) differ; the two fixed ids above
+# are chosen to verify both md5 buckets — if this ever fails, change one id.
+if [ "$PORT_A" != "$PORT_C" ]; then
+  PASS=$((PASS+1)); echo "  PASS: different session ids -> different ports"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: different session ids -> different ports (both $PORT_A)"
+fi
+
+# Port must fall in expected range
+if [ "$PORT_A" -ge 6420 ] && [ "$PORT_A" -le 7419 ]; then
+  PASS=$((PASS+1)); echo "  PASS: port in 6420-7419 range"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: port $PORT_A out of range 6420-7419"
+fi
 
 echo
 echo "Results: $PASS passed, $FAIL failed"
