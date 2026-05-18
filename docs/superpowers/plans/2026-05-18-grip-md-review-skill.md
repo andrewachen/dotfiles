@@ -362,18 +362,22 @@ assert_contains "URL contains a port" "$URL" ":"
 PID_FILE="$XDG_CACHE_HOME/claude-grip/$CLAUDE_CODE_SESSION_ID.pid"
 if [ -f "$PID_FILE" ]; then
   PASS=$((PASS+1)); echo "  PASS: PID file created"
-  GRIP_PID=$(cat "$PID_FILE")
+  # PID file format is "PID STARTTIME" — read just the PID.
+  GRIP_PID=$(awk '{print $1}' "$PID_FILE")
   if kill -0 "$GRIP_PID" 2>/dev/null; then
     PASS=$((PASS+1)); echo "  PASS: grip process alive"
   else
     FAIL=$((FAIL+1)); echo "  FAIL: grip process not alive (pid $GRIP_PID)"
   fi
+  # PID file must have two whitespace-separated fields.
+  FIELDS=$(awk '{print NF}' "$PID_FILE")
+  assert_eq "PID file has 2 fields (pid+starttime)" "$FIELDS" "2"
 else
   FAIL=$((FAIL+1)); echo "  FAIL: PID file not at $PID_FILE"
 fi
 
 # Clean up this test's grip so subsequent tests start fresh.
-[ -f "$PID_FILE" ] && kill "$(cat "$PID_FILE")" 2>/dev/null
+[ -f "$PID_FILE" ] && kill "$(awk '{print $1}' "$PID_FILE")" 2>/dev/null
 rm -f "$PID_FILE"
 rm -f "$MD"
 ```
@@ -407,6 +411,14 @@ LOG_FILE="$STATE_DIR/${CLAUDE_CODE_SESSION_ID:-no-session}.log"
 # Honor GRIP_BIN for tests; default to the user's wrapper.
 GRIP="${GRIP_BIN:-$HOME/bin/grip}"
 
+# /proc/$pid/stat field 22 is "starttime" in clock ticks since boot.
+# Pairing PID with starttime defends against PID recycling: a recycled
+# PID will have a different starttime, so kill-prior and the SessionEnd
+# hook won't accidentally signal an unrelated process.
+pid_starttime() {
+  awk '{print $22}' "/proc/$1/stat" 2>/dev/null
+}
+
 PORT=$(pick_port)
 "$GRIP" -p "$PORT" "$FILE" >"$LOG_FILE" 2>&1 &
 GRIP_PID=$!
@@ -419,7 +431,7 @@ if ! kill -0 "$GRIP_PID" 2>/dev/null; then
   exit 1
 fi
 
-echo "$GRIP_PID" > "$PID_FILE"
+echo "$GRIP_PID $(pid_starttime "$GRIP_PID")" > "$PID_FILE"
 
 URL=$(grep -oE 'http://[^[:space:]]+' "$LOG_FILE" | head -1)
 if [ -z "$URL" ]; then
@@ -435,19 +447,21 @@ echo "$URL"
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `bash /home/achen/git/gh/dotfiles/tests/grip-review/test.sh`
-Expected: `Results: 7 passed, 0 failed`.
+Expected: `Results: 8 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git -C /home/achen/git/gh/dotfiles add .claude/skills/grip-review/serve.sh tests/grip-review/test.sh
 git -C /home/achen/git/gh/dotfiles commit -m "$(cat <<'EOF'
-feat(grip-review): launch grip, write PID file, emit URL
+feat(grip-review): launch grip, write PID+starttime, emit URL
 
-Launch grip in the background on the deterministic port, write its
-PID to a session-scoped state file under XDG_CACHE_HOME, scrape the
-URL from its first 0.5s of output and emit it. GRIP_BIN env var
-exists for test injection.
+Launch grip in the background on the deterministic port, write
+"PID STARTTIME" to a session-scoped state file under XDG_CACHE_HOME
+(starttime from /proc/$pid/stat field 22 defends against PID recycling
+when kill-prior and the SessionEnd hook later read this file). Scrape
+the URL from grip's first 0.5s of output and emit it. GRIP_BIN env
+var exists for test injection.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
@@ -473,10 +487,10 @@ MD3=$(mktemp --suffix=.md); echo "# b" > "$MD3"
 
 "$SERVE" "$MD2" >/dev/null
 PID_FILE="$XDG_CACHE_HOME/claude-grip/$CLAUDE_CODE_SESSION_ID.pid"
-FIRST_PID=$(cat "$PID_FILE")
+FIRST_PID=$(awk '{print $1}' "$PID_FILE")
 
 "$SERVE" "$MD3" >/dev/null
-SECOND_PID=$(cat "$PID_FILE")
+SECOND_PID=$(awk '{print $1}' "$PID_FILE")
 
 if [ "$FIRST_PID" != "$SECOND_PID" ]; then
   PASS=$((PASS+1)); echo "  PASS: re-invocation rotates PID"
@@ -494,6 +508,28 @@ fi
 
 kill "$SECOND_PID" 2>/dev/null
 rm -f "$PID_FILE" "$MD2" "$MD3"
+
+# --- Test: stale PID file with mismatched starttime does NOT kill unrelated process ---
+sleep 60 &
+VICTIM=$!
+mkdir -p "$XDG_CACHE_HOME/claude-grip"
+VICT_PID_FILE="$XDG_CACHE_HOME/claude-grip/stale-victim.pid"
+# Real starttimes are millions of clock ticks; "1" cannot match.
+echo "$VICTIM 1" > "$VICT_PID_FILE"
+
+MD_VICT=$(mktemp --suffix=.md); echo "# v" > "$MD_VICT"
+CLAUDE_CODE_SESSION_ID=stale-victim "$SERVE" "$MD_VICT" >/dev/null
+
+if kill -0 "$VICTIM" 2>/dev/null; then
+  PASS=$((PASS+1)); echo "  PASS: stale PID+starttime did not kill victim"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: victim process was killed by stale PID file"
+fi
+
+# Cleanup: kill the victim sleep and the new grip started by the call above.
+kill "$VICTIM" 2>/dev/null
+[ -f "$VICT_PID_FILE" ] && kill "$(awk '{print $1}' "$VICT_PID_FILE")" 2>/dev/null
+rm -f "$VICT_PID_FILE" "$MD_VICT"
 ```
 
 - [ ] **Step 2: Run the test to verify failure**
@@ -501,16 +537,19 @@ rm -f "$PID_FILE" "$MD2" "$MD3"
 Run: `bash /home/achen/git/gh/dotfiles/tests/grip-review/test.sh`
 Expected: "first grip killed" FAILs (the previous grip leaks because no kill-prior logic exists yet). "re-invocation rotates PID" likely PASSes because the second grip gets a fresh OS pid regardless.
 
-- [ ] **Step 3: Implement kill-prior logic**
+- [ ] **Step 3: Implement kill-prior logic with PID+starttime verification**
 
-In `/home/achen/git/gh/dotfiles/.claude/skills/grip-review/serve.sh`, find the line `mkdir -p "$STATE_DIR"` and insert AFTER `PID_FILE=...` (and BEFORE the grip launch) this block:
+In `/home/achen/git/gh/dotfiles/.claude/skills/grip-review/serve.sh`, insert this block AFTER the `pid_starttime()` function definition added in Task 4, and BEFORE `PORT=$(pick_port)`:
 
 ```bash
 # Kill any prior grip from this same Claude session.
+# Verify the recorded starttime still matches before signalling — if the
+# previous grip died and Linux recycled its PID, the starttime will differ
+# and we leave that unrelated process alone.
 if [ -f "$PID_FILE" ]; then
-  PRIOR=$(cat "$PID_FILE" 2>/dev/null || true)
-  if [ -n "$PRIOR" ] && kill -0 "$PRIOR" 2>/dev/null; then
-    kill "$PRIOR" 2>/dev/null || true
+  read -r PRIOR_PID PRIOR_START < "$PID_FILE" 2>/dev/null || PRIOR_PID=""
+  if [ -n "$PRIOR_PID" ] && [ "$(pid_starttime "$PRIOR_PID")" = "$PRIOR_START" ]; then
+    kill "$PRIOR_PID" 2>/dev/null || true
   fi
   rm -f "$PID_FILE"
 fi
@@ -519,18 +558,20 @@ fi
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `bash /home/achen/git/gh/dotfiles/tests/grip-review/test.sh`
-Expected: `Results: 9 passed, 0 failed`.
+Expected: `Results: 11 passed, 0 failed` (8 prior + 2 kill-prior + 1 stale-pid-safety).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git -C /home/achen/git/gh/dotfiles add .claude/skills/grip-review/serve.sh tests/grip-review/test.sh
 git -C /home/achen/git/gh/dotfiles commit -m "$(cat <<'EOF'
-feat(grip-review): kill prior grip on re-invocation
+feat(grip-review): kill prior grip with PID+starttime safety check
 
-Each invocation reads the session PID file, signals the prior grip
-if still running, and removes the stale file before launching the
-new one. Bounded to this session id so sibling Claude sessions
+Each invocation reads the session PID file, verifies the recorded
+starttime still matches /proc/$pid/stat field 22, and only signals
+when both match — so a recycled PID from a long-dead grip cannot
+cause us to kill an unrelated user process. Removes the stale file
+either way. Bounded to this session id so sibling Claude sessions
 aren't disturbed.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
@@ -563,20 +604,26 @@ assert_contains "retry produced a URL" "$URL_C" "http://"
 EXPECTED_PORT=$((PRIMARY + 1))
 assert_contains "retry used next port" "$URL_C" ":$EXPECTED_PORT/"
 
+# Regression check: serve.sh must emit exactly ONE URL line on stdout
+# (caught a bug where the retry loop and the old single-shot extraction
+# both echoed, producing two URLs per successful invocation).
+URL_LINES=$(printf '%s\n' "$URL_C" | grep -c '^http')
+assert_eq "single URL line on stdout" "$URL_LINES" "1"
+
 # Cleanup
 RETRY_PID_FILE="$XDG_CACHE_HOME/claude-grip/collision-session.pid"
-[ -f "$RETRY_PID_FILE" ] && kill "$(cat "$RETRY_PID_FILE")" 2>/dev/null
+[ -f "$RETRY_PID_FILE" ] && kill "$(awk '{print $1}' "$RETRY_PID_FILE")" 2>/dev/null
 rm -f "$RETRY_PID_FILE" "$MD4"
 ```
 
 - [ ] **Step 2: Run the test to verify failure**
 
 Run: `bash /home/achen/git/gh/dotfiles/tests/grip-review/test.sh`
-Expected: prior 9 PASS, both new asserts FAIL (no retry — script exits 1 after the first grip dies).
+Expected: prior 11 PASS, all three new asserts FAIL (no retry — script exits 1 after the first grip dies).
 
 - [ ] **Step 3: Implement retry**
 
-Replace the single-shot launch block in serve.sh (from `"$GRIP" -p "$PORT" ...` through the `echo "$GRIP_PID" > "$PID_FILE"`) with this loop:
+Replace the entire launch-through-emit section in serve.sh — from `"$GRIP" -p "$PORT" "$FILE" >"$LOG_FILE" 2>&1 &` (the line right after the `sleep 0.5` comment) through the final `echo "$URL"` (inclusive). Do NOT leave the original Task-4 `URL=$(grep ...)` extraction or trailing `echo "$URL"` in place — the loop below handles both internally, and leaving them would cause serve.sh to print two URLs per invocation (the regression the new test guards against).
 
 ```bash
 URL=""
@@ -590,7 +637,7 @@ for ATTEMPT in 0 1 2 3 4; do
   if kill -0 "$GRIP_PID" 2>/dev/null; then
     URL=$(grep -oE 'http://[^[:space:]]+' "$LOG_FILE" | head -1)
     if [ -n "$URL" ]; then
-      echo "$GRIP_PID" > "$PID_FILE"
+      echo "$GRIP_PID $(pid_starttime "$GRIP_PID")" > "$PID_FILE"
       break
     fi
     # Process alive but no URL — kill and treat as failure.
@@ -610,7 +657,7 @@ echo "$URL"
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `bash /home/achen/git/gh/dotfiles/tests/grip-review/test.sh`
-Expected: `Results: 11 passed, 0 failed`.
+Expected: `Results: 14 passed, 0 failed` (11 prior + retry-URL + retry-port + single-URL-line).
 
 - [ ] **Step 5: Commit**
 
@@ -646,7 +693,7 @@ HOOK="$DOTFILES/.claude/hooks/cleanup-grip.sh"
 MD5=$(mktemp --suffix=.md); echo "# d" > "$MD5"
 CLAUDE_CODE_SESSION_ID=cleanup-test "$SERVE" "$MD5" >/dev/null
 CLEAN_PID_FILE="$XDG_CACHE_HOME/claude-grip/cleanup-test.pid"
-CLEAN_PID=$(cat "$CLEAN_PID_FILE")
+CLEAN_PID=$(awk '{print $1}' "$CLEAN_PID_FILE")
 
 # Hook reads JSON from stdin (Claude Code passes session info); pass minimal valid JSON.
 echo '{"session_id":"cleanup-test"}' | CLAUDE_CODE_SESSION_ID=cleanup-test "$HOOK"
@@ -664,6 +711,23 @@ else
 fi
 
 rm -f "$MD5"
+
+# --- Test: hook with mismatched starttime does NOT kill unrelated process ---
+sleep 60 &
+HOOK_VICTIM=$!
+HOOK_VICT_FILE="$XDG_CACHE_HOME/claude-grip/hook-victim.pid"
+echo "$HOOK_VICTIM 1" > "$HOOK_VICT_FILE"
+
+echo '{"session_id":"hook-victim"}' | CLAUDE_CODE_SESSION_ID=hook-victim "$HOOK"
+
+if kill -0 "$HOOK_VICTIM" 2>/dev/null; then
+  PASS=$((PASS+1)); echo "  PASS: hook skipped kill on stale starttime"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: hook killed victim on stale starttime"
+fi
+
+kill "$HOOK_VICTIM" 2>/dev/null
+rm -f "$HOOK_VICT_FILE"
 ```
 
 - [ ] **Step 2: Run the test to verify failure**
@@ -691,9 +755,12 @@ STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-grip"
 PID_FILE="$STATE_DIR/${CLAUDE_CODE_SESSION_ID:-no-session}.pid"
 
 if [ -f "$PID_FILE" ]; then
-  PID=$(cat "$PID_FILE" 2>/dev/null || true)
-  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-    kill "$PID" 2>/dev/null || true
+  read -r PID STARTTIME < "$PID_FILE" 2>/dev/null || PID=""
+  if [ -n "$PID" ] && [ -n "$STARTTIME" ]; then
+    ACTUAL=$(awk '{print $22}' "/proc/$PID/stat" 2>/dev/null)
+    if [ "$ACTUAL" = "$STARTTIME" ]; then
+      kill "$PID" 2>/dev/null || true
+    fi
   fi
   rm -f "$PID_FILE"
 fi
@@ -711,18 +778,21 @@ chmod +x /home/achen/git/gh/dotfiles/.claude/hooks/cleanup-grip.sh
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `bash /home/achen/git/gh/dotfiles/tests/grip-review/test.sh`
-Expected: `Results: 13 passed, 0 failed`.
+Expected: `Results: 17 passed, 0 failed` (14 prior + kill-grip + remove-pid-file + stale-starttime-safety).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git -C /home/achen/git/gh/dotfiles add .claude/hooks/cleanup-grip.sh tests/grip-review/test.sh
 git -C /home/achen/git/gh/dotfiles commit -m "$(cat <<'EOF'
-feat(grip-review): SessionEnd cleanup hook
+feat(grip-review): SessionEnd cleanup hook with starttime check
 
 cleanup-grip.sh reaps the session's grip process and removes its
-PID + log files from XDG_CACHE_HOME/claude-grip/. Drains stdin so
-Claude Code doesn't block on a closed pipe.
+PID + log files from XDG_CACHE_HOME/claude-grip/. Verifies the
+recorded /proc/$pid/stat starttime still matches before signalling
+so a recycled PID (after a long session and a dead grip) can't take
+out an unrelated user process. Drains stdin so Claude Code doesn't
+block on a closed pipe.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
@@ -956,7 +1026,7 @@ Expected: exit 0.
 - [ ] **Step 1: Run the test suite one more time end-to-end**
 
 Run: `bash /home/achen/git/gh/dotfiles/tests/grip-review/test.sh`
-Expected: `Results: 13 passed, 0 failed`.
+Expected: `Results: 17 passed, 0 failed`.
 
 - [ ] **Step 2: Real-world smoke against the live serve.sh and live grip**
 
@@ -988,10 +1058,18 @@ If smoke tests revealed any needed tweaks, commit them. Otherwise no-op.
 
 - Spec coverage: All five components from the design (skill, serve.sh, hook, CLAUDE.md edit, dotfiles wiring) have dedicated tasks.
 - Placeholder scan: All `<filename>` and `<port>` references are illustrative inside code/markdown blocks, not action items left for the engineer to fill.
-- Type consistency: PID-file path uses `${CLAUDE_CODE_SESSION_ID:-no-session}.pid` throughout (serve.sh, cleanup-grip.sh, tests).
+- Type consistency: PID-file path uses `${CLAUDE_CODE_SESSION_ID:-no-session}.pid` throughout (serve.sh, cleanup-grip.sh, tests). PID file format is `"PID STARTTIME"` (two whitespace-separated fields) throughout — readers consistently use `awk '{print $1}'` for the PID and `read -r PID STARTTIME < file` when both are needed.
 - Memory cross-check:
   - `feedback_dotfiles_hook_wiring.md`: ✓ hook in `.claude/hooks/`, example settings checked in, live settings out of git.
   - `feedback_codex_review_pairing.md`: ✓ directive in CLAUDE.md, no superpowers fork.
   - `claude_md_symlink.md`: ✓ edit at dotfiles path, symlink propagates.
   - `feedback_heredoc_no_escape.md`: ✓ no `$`/`` ` `` escaping inside heredocs.
   - `dotfiles_skill_sources.md`: ✓ adding a third personal skill; same pattern.
+
+## Codex review findings (addressed in plan revision)
+
+Codex flagged two P2 issues on the first plan revision (`0685bbe`). Both are addressed in the current plan:
+
+1. **Double URL print bug.** Task 6's "Replace the single-shot launch block" instruction only delimited the launch-through-PID-write range, leaving Task 4's trailing `URL=$(grep...) ... echo "$URL"` block in place — serve.sh would print two URLs per invocation. **Fix:** Task 6 Step 3 now explicitly delimits the replacement range as launch (inclusive) through final `echo "$URL"` (inclusive), and a new regression test in Task 6 Step 1 asserts exactly one URL line on stdout via `grep -c '^http'`.
+
+2. **PID recycling could kill unrelated processes.** `kill -0 $PID` only confirms a process with that PID exists; if grip crashed and Linux recycled the PID to an unrelated user process, both kill-prior (serve.sh) and the SessionEnd hook would signal the wrong process. **Fix:** The PID file format is now `"PID STARTTIME"`, where starttime comes from `/proc/$pid/stat` field 22 (stable across exec, unique per process). Both kill-prior and the cleanup hook verify the starttime still matches before signalling. New negative tests in Tasks 5 and 7 confirm a stale starttime aborts the kill.
