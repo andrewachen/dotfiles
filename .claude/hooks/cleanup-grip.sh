@@ -13,7 +13,9 @@ STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-grip"
 PID_FILE="$STATE_DIR/${CLAUDE_CODE_SESSION_ID:-no-session}.pid"
 
 if [ -f "$PID_FILE" ]; then
-  read -r PID STARTTIME < "$PID_FILE" 2>/dev/null || PID=""
+  # PID file format: "PID STARTTIME HOST PORT DIR". Trailing fields are
+  # only used by serve.sh's reuse path; discard them here.
+  read -r PID STARTTIME REST < "$PID_FILE" 2>/dev/null || PID=""
   if [ -n "$PID" ] && [ -n "$STARTTIME" ]; then
     ACTUAL=$(awk '{print $22}' "/proc/$PID/stat" 2>/dev/null)
     if [ "$ACTUAL" = "$STARTTIME" ]; then

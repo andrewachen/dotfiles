@@ -82,9 +82,9 @@ if [ -f "$PID_FILE" ]; then
   else
     FAIL=$((FAIL+1)); echo "  FAIL: grip process not alive (pid $GRIP_PID)"
   fi
-  # PID file must have two whitespace-separated fields.
+  # PID file must have five whitespace-separated fields.
   FIELDS=$(awk '{print NF}' "$PID_FILE")
-  assert_eq "PID file has 2 fields (pid+starttime)" "$FIELDS" "2"
+  assert_eq "PID file has 5 fields (pid+starttime+host+port+dir)" "$FIELDS" "5"
 else
   FAIL=$((FAIL+1)); echo "  FAIL: PID file not at $PID_FILE"
 fi
@@ -94,33 +94,94 @@ fi
 rm -f "$PID_FILE"
 rm -f "$MD"
 
-# --- Test: re-invocation kills the prior grip from the same session ---
-MD2=$(mktemp --suffix=.md); echo "# a" > "$MD2"
-MD3=$(mktemp --suffix=.md); echo "# b" > "$MD3"
+# --- Test: re-invocation with a sibling file reuses the live grip ---
+# go-grip already serves every .md in the launch directory at its relative URL
+# path, so a second review gate on a sibling file does not need a fresh process.
+DIR_SIB=$(mktemp -d)
+MD2A="$DIR_SIB/a.md"; echo "# a" > "$MD2A"
+MD2B="$DIR_SIB/b.md"; echo "# b" > "$MD2B"
 
-"$SERVE" "$MD2" >/dev/null
+URL_2A=$("$SERVE" "$MD2A")
 PID_FILE="$XDG_CACHE_HOME/claude-grip/$CLAUDE_CODE_SESSION_ID.pid"
 FIRST_PID=$(awk '{print $1}' "$PID_FILE")
 
-"$SERVE" "$MD3" >/dev/null
+URL_2B=$("$SERVE" "$MD2B")
+SECOND_PID=$(awk '{print $1}' "$PID_FILE")
+
+assert_eq "sibling re-invocation reuses PID" "$FIRST_PID" "$SECOND_PID"
+
+assert_contains "sibling URL points to second file" "$URL_2B" "/b.md"
+
+# Exactly one URL line — the reuse path must not double-emit.
+REUSE_URL_LINES=$(printf '%s\n' "$URL_2B" | grep -c '^http')
+assert_eq "sibling reuse emits one URL line" "$REUSE_URL_LINES" "1"
+
+if kill -0 "$FIRST_PID" 2>/dev/null; then
+  PASS=$((PASS+1)); echo "  PASS: grip still alive after sibling reuse"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: grip died after sibling reuse"
+fi
+
+kill "$FIRST_PID" 2>/dev/null
+rm -rf "$DIR_SIB"
+rm -f "$PID_FILE"
+
+# --- Test: reuse path percent-encodes URL-reserved chars in sibling names ---
+# The launch path echoes go-grip's own URL (already escaped); the reuse path
+# builds the URL itself and must encode chars like '#', '?', and space so the
+# browser doesn't truncate at a fragment / query / whitespace.
+DIR_ENC=$(mktemp -d)
+echo "# seed" > "$DIR_ENC/seed.md"
+"$SERVE" "$DIR_ENC/seed.md" >/dev/null
+ENC_PID=$(awk '{print $1}' "$PID_FILE")
+
+HASH_NAME='a#b.md'
+echo "# hash" > "$DIR_ENC/$HASH_NAME"
+URL_HASH=$("$SERVE" "$DIR_ENC/$HASH_NAME")
+assert_contains "# in sibling filename encoded to %23" "$URL_HASH" "/a%23b.md"
+
+SPACE_NAME='plan v2.md'
+echo "# space" > "$DIR_ENC/$SPACE_NAME"
+URL_SPACE=$("$SERVE" "$DIR_ENC/$SPACE_NAME")
+assert_contains "space in sibling filename encoded to %20" "$URL_SPACE" "/plan%20v2.md"
+
+# Multi-byte UTF-8 must encode per-byte, not per-codepoint. 'é' is 0xC3 0xA9.
+UTF8_NAME='café.md'
+echo "# utf8" > "$DIR_ENC/$UTF8_NAME"
+URL_UTF8=$("$SERVE" "$DIR_ENC/$UTF8_NAME")
+assert_contains "UTF-8 sibling filename encoded per byte" "$URL_UTF8" "/caf%C3%A9.md"
+
+kill "$ENC_PID" 2>/dev/null
+rm -rf "$DIR_ENC"
+rm -f "$PID_FILE"
+
+# --- Test: re-invocation in a different directory rotates the grip ---
+DIR_X=$(mktemp -d); DIR_Y=$(mktemp -d)
+MD_X="$DIR_X/x.md"; echo "# x" > "$MD_X"
+MD_Y="$DIR_Y/y.md"; echo "# y" > "$MD_Y"
+
+"$SERVE" "$MD_X" >/dev/null
+FIRST_PID=$(awk '{print $1}' "$PID_FILE")
+
+"$SERVE" "$MD_Y" >/dev/null
 SECOND_PID=$(awk '{print $1}' "$PID_FILE")
 
 if [ "$FIRST_PID" != "$SECOND_PID" ]; then
-  PASS=$((PASS+1)); echo "  PASS: re-invocation rotates PID"
+  PASS=$((PASS+1)); echo "  PASS: different-dir re-invocation rotates PID"
 else
-  FAIL=$((FAIL+1)); echo "  FAIL: PID did not change ($FIRST_PID)"
+  FAIL=$((FAIL+1)); echo "  FAIL: PID did not change across dirs ($FIRST_PID)"
 fi
 
-# Give the kill signal a moment to deliver, then verify the old PID is gone.
 sleep 0.2
 if kill -0 "$FIRST_PID" 2>/dev/null; then
-  FAIL=$((FAIL+1)); echo "  FAIL: first grip still alive ($FIRST_PID)"
+  FAIL=$((FAIL+1)); echo "  FAIL: first grip still alive across dirs ($FIRST_PID)"
 else
-  PASS=$((PASS+1)); echo "  PASS: first grip killed"
+  PASS=$((PASS+1)); echo "  PASS: first grip killed on different-dir invocation"
 fi
 
 kill "$SECOND_PID" 2>/dev/null
-rm -f "$PID_FILE" "$MD2" "$MD3"
+rm -rf "$DIR_X" "$DIR_Y"
+rm -f "$PID_FILE"
 
 # --- Test: stale PID file with mismatched starttime does NOT kill unrelated process ---
 sleep 60 &

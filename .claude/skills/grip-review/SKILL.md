@@ -40,4 +40,6 @@ On failure the script exits non-zero and prints a diagnostic to stderr. If that 
 
 ## Lifecycle
 
-Each invocation kills the prior grip from this same Claude session (PID tracked at `~/.cache/claude-grip/$CLAUDE_CODE_SESSION_ID.pid`) so only one grip per session is alive at a time. A SessionEnd hook (`~/.claude/hooks/cleanup-grip.sh`) reaps the final grip at session end.
+One grip per session at a time, PID + host + port + directory tracked at `~/.cache/claude-grip/$CLAUDE_CODE_SESSION_ID.pid`. A SessionEnd hook (`~/.claude/hooks/cleanup-grip.sh`) reaps the final grip at session end.
+
+go-grip serves every `.md` under the launch directory at its relative URL path, so if a second review gate asks Andrew to read a sibling file, this skill skips relaunch and just emits a URL like `http://<lan-ip>:<port>/<sibling>.md` pointing at the already-running grip. Both URLs stay live and auto-reload still works. Only a file in a different directory triggers kill-and-relaunch.
