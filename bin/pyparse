@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+# Syntax-check a Python file via ast.parse — no .pyc side effects (unlike `python3 -m py_compile`).
+# Usage: pyparse FILE [FILE ...]
+import ast
+import sys
+
+if len(sys.argv) < 2:
+    sys.stderr.write("usage: pyparse FILE [FILE ...]\n")
+    sys.exit(2)
+
+failed = 0
+for path in sys.argv[1:]:
+    try:
+        with open(path, "rb") as f:
+            ast.parse(f.read(), filename=path)
+        print(f"ok: {path}")
+    except SyntaxError as e:
+        sys.stderr.write(f"{path}:{e.lineno}:{e.offset}: {e.msg}\n")
+        failed += 1
+    except OSError as e:
+        sys.stderr.write(f"{path}: {e}\n")
+        failed += 1
+
+sys.exit(1 if failed else 0)
