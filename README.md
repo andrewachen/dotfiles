@@ -104,3 +104,22 @@ done
 ```
 
 Activate per-machine by merging entries from [`.claude/settings.git-dash-C-example.json`](.claude/settings.git-dash-C-example.json) and [`.claude/settings.read-write-edit-block-example.json`](.claude/settings.read-write-edit-block-example.json) into `~/.claude/settings.json`. Both examples use narrow `if: Bash(<cmd> *)` matchers so the hooks only run for the relevant commands.
+
+### Enforce an explicit model on every subagent dispatch
+
+`enforce-subagent-model.py` is a PreToolUse hook that denies a subagent dispatch with no explicit `model`, so the choice is never left to silent inheritance of the session model. A dispatch with no `model` inherits the session model (often Opus) even when a mechanical, fully-specified task would run fine on a cheaper tier. The hook makes the choice conscious at dispatch time — any explicit model passes, including `"inherit"` if you genuinely want the session model.
+
+- **`Agent` / `Task`** — denied when `tool_input.model` is absent/falsy.
+- **`Workflow`** — the launch is denied when any `agent(` call in `tool_input.script` lacks a top-level `model` option (bare `model:` or quoted `'model':`). This is a best-effort static text lint of the JavaScript: string/template-literal contents and `//` / `/* */` comments are blanked first, so an `agent(`/`model:` inside a prompt, description, or comment doesn't fool it, and a `model:` nested in a sibling config, an inline schema, or a nested `agent()` call doesn't satisfy the outer call. Known gaps (all err toward *allowing* — a missed deny, never a wrongful block): regex literals (`/.../`) aren't recognized, so a quote inside one can blank a following call; and a `model` supplied via a variable or spread isn't seen. It enforces *presence* of a model, never *correctness of tier*.
+
+The hook fails open: malformed input or an unexpected shape allows the dispatch — a hook bug must never block work.
+
+Install the script:
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+mkdir -p ~/.claude/hooks
+ln -sf "$PWD/.claude/hooks/enforce-subagent-model.py" "$HOME/.claude/hooks/enforce-subagent-model.py"
+```
+
+Activate per-machine by merging [`.claude/settings.enforce-subagent-model-example.json`](.claude/settings.enforce-subagent-model-example.json) into `~/.claude/settings.json`. It adds `Agent`, `Task`, and `Workflow` matcher entries to `hooks.PreToolUse` (no `if` field — these match the whole tool, not a Bash sub-command).
