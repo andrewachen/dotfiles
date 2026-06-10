@@ -13,15 +13,18 @@ STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/claude-grip"
 PID_FILE="$STATE_DIR/${CLAUDE_CODE_SESSION_ID:-no-session}.pid"
 
 if [ -f "$PID_FILE" ]; then
-  # PID file format: "PID STARTTIME HOST PORT DIR". Trailing fields are
-  # only used by serve.sh's reuse path; discard them here.
-  read -r PID STARTTIME REST < "$PID_FILE" 2>/dev/null || PID=""
-  if [ -n "$PID" ] && [ -n "$STARTTIME" ]; then
+  # PID file format: one line per live grip, "PID STARTTIME HOST PORT ROOT".
+  # A session can hold several grips (one per directory served), so reap every
+  # line. Trailing fields beyond STARTTIME are only used by serve.sh's reuse
+  # path; ignore them here.
+  while read -r PID STARTTIME REST; do
+    [ -z "$PID" ] && continue
+    [ -z "$STARTTIME" ] && continue
     ACTUAL=$(awk '{print $22}' "/proc/$PID/stat" 2>/dev/null)
     if [ "$ACTUAL" = "$STARTTIME" ]; then
       kill "$PID" 2>/dev/null || true
     fi
-  fi
+  done < "$PID_FILE"
   rm -f "$PID_FILE"
 fi
 

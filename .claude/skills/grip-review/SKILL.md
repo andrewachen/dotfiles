@@ -12,7 +12,7 @@ languages: bash
 
 Serves a markdown file via the local `~/bin/grip` wrapper, which binds `go-grip` to Andrew's LAN-visible IP. The URL it returns is reachable from any device on his network, so reviews don't require sitting at this machine.
 
-The skill encapsulates all process and file management in a single helper script (`serve.sh`) so one Bash allowlist entry covers everything: state-dir creation, PID-file writes, prior-grip kill, port allocation, grip launch, URL extraction. No additional prompts.
+The skill encapsulates all process and file management in a single helper script (`serve.sh`) so one Bash allowlist entry covers everything: state-dir creation, PID-file tracking, dead-grip pruning, live-grip reuse, port allocation, grip launch, URL construction. No additional prompts.
 
 ## When to invoke
 
@@ -38,8 +38,12 @@ The script prints a single URL to stdout on success (e.g. `http://<lan-ip>:6531/
 
 On failure the script exits non-zero and prints a diagnostic to stderr. If that happens, fall back to asking Andrew to read the file directly.
 
+**Run the helper for EVERY file you want reviewed.** Never reuse a URL the helper printed for a different file, and never hand-build a URL from a host/port you saw earlier — even if you believe a grip is "already serving that directory." The script decides whether to reuse a live grip or launch a new one; that decision is its job, not yours. Re-run it and use exactly the URL it prints.
+
 ## Lifecycle
 
-One grip per session at a time, PID + host + port + directory tracked at `~/.cache/claude-grip/$CLAUDE_CODE_SESSION_ID.pid`. A SessionEnd hook (`~/.claude/hooks/cleanup-grip.sh`) reaps the final grip at session end.
+go-grip roots an HTTP file server at the directory of the path it's given and serves that whole subtree (every `.md` rendered, live from disk). This skill exploits that to keep multiple docs live at once.
 
-go-grip serves every `.md` under the launch directory at its relative URL path, so if a second review gate asks Andrew to read a sibling file, this skill skips relaunch and just emits a URL like `http://<lan-ip>:<port>/<sibling>.md` pointing at the already-running grip. Both URLs stay live and auto-reload still works. Only a file in a different directory triggers kill-and-relaunch.
+A session can hold several grips — one per directory tree being served — tracked one line per grip (`PID STARTTIME HOST PORT ROOT`) at `~/.cache/claude-grip/$CLAUDE_CODE_SESSION_ID.pid`. Each `serve.sh` run reuses any live grip that already covers the file's directory and otherwise launches a new grip on a fresh port. **It never kills a running grip to serve a different directory**, so a spec served earlier stays live while you serve its plan. A SessionEnd hook (`~/.claude/hooks/cleanup-grip.sh`) reaps every grip at session end.
+
+The superpowers workflow writes specs to `docs/superpowers/specs/` and plans to `docs/superpowers/plans/` — different directories under a shared ancestor. For files in either, the skill roots a single grip at the common `docs/superpowers/` ancestor, so the spec is served at `…/specs/<file>.md` and the plan at `…/plans/<file>.md` by the **same** daemon. Andrew can keep both open at the same time; both auto-reload. Any other markdown is served from its own directory.

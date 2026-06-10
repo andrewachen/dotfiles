@@ -155,32 +155,79 @@ kill "$ENC_PID" 2>/dev/null
 rm -rf "$DIR_ENC"
 rm -f "$PID_FILE"
 
-# --- Test: re-invocation in a different directory rotates the grip ---
+# --- Test: re-invocation in a different directory adds a second grip ---
+# Both grips must stay alive so a spec (one dir) and a plan (another dir) can be
+# reviewed at the same time. The PID file tracks one line per live grip.
 DIR_X=$(mktemp -d); DIR_Y=$(mktemp -d)
 MD_X="$DIR_X/x.md"; echo "# x" > "$MD_X"
 MD_Y="$DIR_Y/y.md"; echo "# y" > "$MD_Y"
 
 "$SERVE" "$MD_X" >/dev/null
-FIRST_PID=$(awk '{print $1}' "$PID_FILE")
+FIRST_PID=$(awk 'NR==1{print $1}' "$PID_FILE")
 
 "$SERVE" "$MD_Y" >/dev/null
-SECOND_PID=$(awk '{print $1}' "$PID_FILE")
+SECOND_PID=$(awk 'NR==2{print $1}' "$PID_FILE")
 
-if [ "$FIRST_PID" != "$SECOND_PID" ]; then
-  PASS=$((PASS+1)); echo "  PASS: different-dir re-invocation rotates PID"
+PID_LINES=$(grep -c . "$PID_FILE")
+assert_eq "different dir -> PID file has 2 grip lines" "$PID_LINES" "2"
+
+if [ -n "$FIRST_PID" ] && [ "$FIRST_PID" != "$SECOND_PID" ]; then
+  PASS=$((PASS+1)); echo "  PASS: different-dir invocation adds a distinct grip"
 else
-  FAIL=$((FAIL+1)); echo "  FAIL: PID did not change across dirs ($FIRST_PID)"
+  FAIL=$((FAIL+1)); echo "  FAIL: second grip not distinct (first=$FIRST_PID second=$SECOND_PID)"
 fi
 
 sleep 0.2
 if kill -0 "$FIRST_PID" 2>/dev/null; then
-  FAIL=$((FAIL+1)); echo "  FAIL: first grip still alive across dirs ($FIRST_PID)"
+  PASS=$((PASS+1)); echo "  PASS: first grip still alive after different-dir invocation"
 else
-  PASS=$((PASS+1)); echo "  PASS: first grip killed on different-dir invocation"
+  FAIL=$((FAIL+1)); echo "  FAIL: first grip was killed on different-dir invocation ($FIRST_PID)"
+fi
+if kill -0 "$SECOND_PID" 2>/dev/null; then
+  PASS=$((PASS+1)); echo "  PASS: second grip alive"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: second grip not alive ($SECOND_PID)"
 fi
 
-kill "$SECOND_PID" 2>/dev/null
+kill "$FIRST_PID" "$SECOND_PID" 2>/dev/null
 rm -rf "$DIR_X" "$DIR_Y"
+rm -f "$PID_FILE"
+
+# --- Test: superpowers spec + plan share ONE grip rooted at docs/superpowers ---
+# brainstorming writes docs/superpowers/specs/<topic>-design.md and writing-plans
+# writes docs/superpowers/plans/<feature>.md — different dirs but a common
+# ancestor. Rooting one grip at that ancestor serves both at /specs/.. and
+# /plans/.. so the spec stays live while the plan is reviewed.
+SP_ROOT=$(mktemp -d)/docs/superpowers
+mkdir -p "$SP_ROOT/specs" "$SP_ROOT/plans"
+SPEC="$SP_ROOT/specs/2026-05-30-thing-design.md"; echo "# spec" > "$SPEC"
+PLAN="$SP_ROOT/plans/2026-05-30-thing.md"; echo "# plan" > "$PLAN"
+
+URL_SPEC=$("$SERVE" "$SPEC")
+SPEC_PID=$(awk 'NR==1{print $1}' "$PID_FILE")
+URL_PLAN=$("$SERVE" "$PLAN")
+PLAN_PID=$(awk 'NR==1{print $1}' "$PID_FILE")
+
+assert_contains "spec URL is under /specs/"  "$URL_SPEC" "/specs/2026-05-30-thing-design.md"
+assert_contains "plan URL is under /plans/"  "$URL_PLAN" "/plans/2026-05-30-thing.md"
+assert_eq "spec and plan reuse the same grip PID" "$SPEC_PID" "$PLAN_PID"
+
+SP_LINES=$(grep -c . "$PID_FILE")
+assert_eq "superpowers spec+plan -> single grip line" "$SP_LINES" "1"
+
+# Both URLs must share host:port (same daemon).
+SPEC_HP=$(echo "$URL_SPEC" | sed -E 's#http://([^/]+)/.*#\1#')
+PLAN_HP=$(echo "$URL_PLAN" | sed -E 's#http://([^/]+)/.*#\1#')
+assert_eq "spec and plan share host:port" "$SPEC_HP" "$PLAN_HP"
+
+if kill -0 "$SPEC_PID" 2>/dev/null; then
+  PASS=$((PASS+1)); echo "  PASS: shared grip alive after serving plan"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: shared grip died ($SPEC_PID)"
+fi
+
+kill "$SPEC_PID" 2>/dev/null
+rm -rf "$SP_ROOT"
 rm -f "$PID_FILE"
 
 # --- Test: stale PID file with mismatched starttime does NOT kill unrelated process ---
@@ -251,6 +298,33 @@ else
 fi
 
 rm -f "$MD5"
+
+# --- Test: cleanup-grip.sh reaps ALL of a session's grips ---
+# A session can hold several grips (e.g. one per general dir). The hook must
+# kill every tracked grip, not just the first line of the PID file.
+MG_A=$(mktemp -d); MG_B=$(mktemp -d)
+echo "# a" > "$MG_A/a.md"; echo "# b" > "$MG_B/b.md"
+CLAUDE_CODE_SESSION_ID=multi-clean "$SERVE" "$MG_A/a.md" >/dev/null
+CLAUDE_CODE_SESSION_ID=multi-clean "$SERVE" "$MG_B/b.md" >/dev/null
+MG_PID_FILE="$XDG_CACHE_HOME/claude-grip/multi-clean.pid"
+MG_PID1=$(awk 'NR==1{print $1}' "$MG_PID_FILE")
+MG_PID2=$(awk 'NR==2{print $1}' "$MG_PID_FILE")
+
+echo '{"session_id":"multi-clean"}' | CLAUDE_CODE_SESSION_ID=multi-clean "$HOOK"
+sleep 0.2
+
+if kill -0 "$MG_PID1" 2>/dev/null || kill -0 "$MG_PID2" 2>/dev/null; then
+  FAIL=$((FAIL+1)); echo "  FAIL: hook left a grip alive ($MG_PID1 / $MG_PID2)"
+else
+  PASS=$((PASS+1)); echo "  PASS: hook reaped all session grips"
+fi
+if [ -f "$MG_PID_FILE" ]; then
+  FAIL=$((FAIL+1)); echo "  FAIL: hook did not remove multi-grip PID file"
+else
+  PASS=$((PASS+1)); echo "  PASS: hook removed multi-grip PID file"
+fi
+kill "$MG_PID1" "$MG_PID2" 2>/dev/null
+rm -rf "$MG_A" "$MG_B"
 
 # --- Test: hook with mismatched starttime does NOT kill unrelated process ---
 sleep 60 &
