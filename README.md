@@ -18,7 +18,7 @@ Use the actively maintained version (v5.0.7+). Skills evolve there faster than i
 
 ### Personal skills + CLAUDE.md: symlink from this repo
 
-`CLAUDE.md` and Andrew's personal skills (`codex-review`, `java-style`) live in this repo. Install them into `~/.claude/` with symlinks:
+`CLAUDE.md` and Andrew's personal skills (`java-style`, `grip-review`) live in this repo. Install them into `~/.claude/` with symlinks:
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
@@ -26,7 +26,7 @@ mkdir -p ~/.claude/skills
 
 ln -sf "$PWD/.claude/CLAUDE.md" ~/.claude/CLAUDE.md
 
-for s in codex-review java-style grip-review; do
+for s in java-style grip-review; do
   ln -sf "$PWD/.claude/skills/$s" "$HOME/.claude/skills/$s"
 done
 ```
@@ -55,7 +55,9 @@ for b in bin/*; do
 done
 ```
 
-- `codex-review-capture` — wrapper around `codex review` used by the `codex-review` skill. Captures the full transcript to `/tmp/codex-review.*` (owner-only, cleaned on reboot) and prints only the verdict (content after the last `^codex$` marker) to stdout.
+- `codex-review-capture` — wrapper around `codex review` used by the [codex pre-push gate](#optional-codex-pre-push-gate) below. Captures the full transcript to `/tmp/codex-review.*` (owner-only, cleaned on reboot) and prints only the verdict (content after the last `^codex$` marker) to stdout.
+- `pyparse` — syntax-checks Python files via `ast.parse`, with no `.pyc` / `__pycache__` litter (unlike `python3 -m py_compile`). `pyparse FILE [FILE ...]`.
+- `screen` — compatibility wrapper that maps common GNU `screen` invocations to `tmux`.
 
 ### Hooks at a glance
 
