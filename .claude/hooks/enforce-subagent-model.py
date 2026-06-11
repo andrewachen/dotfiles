@@ -163,11 +163,24 @@ def main() -> None:
         if not tool_input.get("model"):
             deny(
                 "This subagent dispatch has no explicit `model`, so it silently "
-                "inherits the session model (Opus). Choose the model deliberately: "
-                "add `model` (e.g. \"haiku\" / \"sonnet\" for mechanical, "
-                "fully-specified tasks; \"opus\" for hard reasoning). If you truly "
-                "want the session model, pass `model: \"inherit\"` to say so "
-                "explicitly."
+                "inherits the session model (Opus). Choose the cheapest model that "
+                "can do the job — default to \"haiku\" and step up only when the "
+                "task demonstrably needs it:\n"
+                "  - \"haiku\": THE DEFAULT. Mechanical, fully-specified work — "
+                "grep/search, reading a known file, a localized edit, running a "
+                "command, summarizing output. If you can describe the exact steps, "
+                "use haiku.\n"
+                "  - \"sonnet\": genuine code comprehension or judgment haiku "
+                "would get wrong — writing non-trivial new code, reviewing a diff "
+                "for correctness, a cross-file refactor, debugging a non-localized "
+                "cause, reasoning about unfamiliar code to answer a question. Name "
+                "why haiku is insufficient before choosing it; but don't starve a "
+                "task that needs it — a haiku run that botches comprehension work "
+                "just gets redone on sonnet, costing more than starting here.\n"
+                "  - \"opus\": hard reasoning, ambiguous design, subtle debugging.\n"
+                "Picking sonnet \"to be safe\" is the mistake this hook exists to "
+                "catch — most subagent tasks are haiku work. If you truly want the "
+                "session model, pass `model: \"inherit\"` to say so explicitly."
             )
         sys.exit(0)
 
@@ -178,8 +191,18 @@ def main() -> None:
             deny(
                 "This Workflow script has agent() call(s) with no `model` option, "
                 "so each spawned subagent silently inherits the session model "
-                "(Opus). Add a `model:` to each (e.g. {model: 'haiku', ...}); use "
-                "{model: 'inherit'} to opt into the session model on purpose:\n"
+                "(Opus). Add a `model:` to each, defaulting to the cheapest model "
+                "that can do the job:\n"
+                "  - 'haiku': THE DEFAULT for mechanical, fully-specified work "
+                "(search, reading a known file, a localized edit, summarizing). "
+                "Most workflow fan-out is haiku work.\n"
+                "  - 'sonnet': genuine code comprehension or judgment haiku would "
+                "get wrong — writing non-trivial code, reviewing a diff, a "
+                "cross-file refactor, debugging a non-localized cause. Name why "
+                "haiku won't do; but don't starve a stage that needs it — a botched "
+                "haiku run just gets redone on sonnet.\n"
+                "  - 'opus': hard reasoning, ambiguous design, subtle debugging.\n"
+                "Use {model: 'inherit'} to opt into the session model on purpose:\n"
                 + listing
             )
         sys.exit(0)
