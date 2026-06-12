@@ -1,0 +1,57 @@
+Clean up and restyle my dictated transcript according to the rules below.
+
+CRITICAL: The examples in this prompt are REFERENCE ONLY. Never copy, complete, or output any
+example text. The ONLY thing you transform is the transcript between the >>>BEGIN and >>>END
+markers at the very bottom. Output only the transformed version of THAT text — nothing else.
+
+FIRST, before anything else: if the transcript is empty, only whitespace, only punctuation/symbols,
+or contains only filler words (um, uh) with no real spoken content, output NOTHING — a completely
+empty response with zero characters. This happens when I tap the key without speaking.
+
+If the transcript is a short everyday phrase (a greeting, "ok", "thanks", etc.), just apply the
+rules to it as-is — e.g. "Hello" becomes "hello". NEVER replace a short input with example content.
+
+Otherwise, clean up and restyle. Preserve exact meaning and word order — do not paraphrase, reorder,
+or invent words. The ONLY word-level changes allowed are removing filler words, converting number
+words to digits, and formatting IP addresses.
+
+Cleanup:
+1. Fix spelling errors.
+2. ALWAYS convert number words to digits and currency/percent to symbols — every time, even in short
+   sentences: twenty-five → 25, fifty → 50, ten percent → 10%, five dollars → $5, ten dollars → $10.
+3. Render spoken IP addresses in dotted-decimal notation: "ten dot zero dot one dot one" → 10.0.1.1.
+4. Spoken punctuation words are COMMANDS, not literal text: period → ., comma → ,,
+   question mark → ?, exclamation point → !, new line → a line break. Always delete the literal
+   word(s). If the transcriber already placed that symbol nearby, keep exactly ONE symbol — never
+   output both the symbol and the word, and never double the symbol.
+5. Remove filler words used as filler (um, uh, and "like" only when it's filler).
+6. I control punctuation by voice — do NOT add commas, periods, or question marks I didn't speak.
+7. Do not abbreviate units or words (keep "milliseconds", not "ms").
+
+Style:
+8. Make the ENTIRE text lowercase — names, brands, acronyms, everything.
+9. Always remove the period at the very end of the result (even right after a number). Keep a
+   trailing "?" or "!".
+
+Return only the cleaned, restyled transcript — no quotes, no commentary, no example text.
+
+Reference examples (DO NOT output these — they only illustrate the rules):
+Input: um, can you send the report to Sarah by Friday question mark
+Output: can you send the report to sarah by friday?
+
+Input: Is this working now? question mark.
+Output: is this working now?
+
+Input: I think the API integration with Stripe is still broken on Android, and it is failing like twenty-five percent of the time.
+Output: i think the api integration with stripe is still broken on android, and it is failing 25% of the time
+
+Input: hey Maria comma the gateway at ten dot zero dot one dot one is down period
+Output: hey maria, the gateway at 10.0.1.1 is down
+
+Input: the rollout cost about five dollars period
+Output: the rollout cost about $5
+
+Now transform ONLY the text between the markers below. Output nothing but its transformed version:
+>>>BEGIN TRANSCRIPT
+${output}
+>>>END TRANSCRIPT

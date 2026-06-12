@@ -1,0 +1,13 @@
+# ABOUTME: Ollama Modelfile for the Handy dictation post-processing model.
+# ABOUTME: qwen3.5:4b made deterministic and length-bounded; build with:
+# ABOUTME:   ollama create handy-qwen -f handy-qwen.Modelfile   (then point Handy at "handy-qwen")
+FROM qwen3.5:4b
+
+# Deterministic output for a mechanical transform (no sampling drift / spurious punctuation).
+PARAMETER temperature 0
+PARAMETER top_p 1
+
+# Hard cap so a degenerate generation can never hang the dictation UI (we hit a 9-minute
+# unbounded run during testing). 512 covers any realistic dictation; raise if you dictate
+# very long passages. NOTE: if Handy sends its own max_tokens, that overrides this default.
+PARAMETER num_predict 512
