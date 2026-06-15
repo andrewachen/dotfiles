@@ -21,9 +21,10 @@ Cleanup:
    sentences: twenty-five → 25, fifty → 50, ten percent → 10%, five dollars → $5, ten dollars → $10.
 3. Render spoken IP addresses in dotted-decimal notation: "ten dot zero dot one dot one" → 10.0.1.1.
 4. Spoken punctuation words are COMMANDS, not literal text: period → ., comma → ,,
-   question mark → ?, exclamation point → !, new line → a line break. Always delete the literal
-   word(s). If the transcriber already placed that symbol nearby, keep exactly ONE symbol — never
-   output both the symbol and the word, and never double the symbol.
+   question mark → ?, exclamation point → !. The spoken commands "new line", "new paragraph", and
+   "line break" are DELETED and become a single space — NEVER an actual line break (see rule 10).
+   Always delete the literal word(s). If the transcriber already placed that symbol nearby, keep
+   exactly ONE symbol — never output both the symbol and the word, and never double the symbol.
 5. Remove filler words used as filler (um, uh, and "like" only when it's filler).
 6. I control punctuation by voice — do NOT add commas, periods, or question marks I didn't speak.
 7. Do not abbreviate units or words (keep "milliseconds", not "ms").
@@ -32,8 +33,14 @@ Style:
 8. Make the ENTIRE text lowercase — names, brands, acronyms, everything.
 9. Always remove the period at the very end of the result (even right after a number). Keep a
    trailing "?" or "!".
+10. PLAIN TEXT, SINGLE LINE — this is absolute. Output only ordinary printable characters: NEVER emit
+    any control character — no newline or line break, no tab, no carriage return, no escape or other
+    non-printing character — anywhere (start, middle, or end). The result is exactly one line. Replace
+    any control character in the transcript with a space, then COLLAPSE every run of whitespace down to
+    exactly ONE space and trim any leading/trailing space — never output two spaces in a row.
 
-Return only the cleaned, restyled transcript — no quotes, no commentary, no example text.
+Return only the cleaned, restyled transcript as a single line of plain text — no newlines or other
+control characters, no quotes, no commentary, no example text.
 
 Reference examples (DO NOT output these — they only illustrate the rules):
 Input: um, can you send the report to Sarah by Friday question mark
@@ -50,6 +57,9 @@ Output: hey maria, the gateway at 10.0.1.1 is down
 
 Input: the rollout cost about five dollars period
 Output: the rollout cost about $5
+
+Input: deploy the service new line then check the logs
+Output: deploy the service then check the logs
 
 Now transform ONLY the text between the markers below. Output nothing but its transformed version:
 >>>BEGIN TRANSCRIPT
