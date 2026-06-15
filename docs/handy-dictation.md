@@ -32,15 +32,23 @@ second copy.
 ## Option B — local post-processing (Ollama)
 
 Same prompt, run against a small local model — faster than cloud on short dictations (no network
-round-trip) and fully offline. Chosen model: **`qwen3.5:4b`** via Ollama, on an RTX A2000 12GB box.
-Warm latency ~0.4s, comfortably under cloud nano.
+round-trip) and fully offline. Chosen model: **`qwen2.5:7b`** via Ollama, on an RTX A2000 12GB box.
+Warm latency ~0.27s, comfortably under cloud nano.
+
+> **Model choice is constrained by KV prefix caching.** The ~1k-token prompt is re-sent on every
+> dictation, so reusing its cached KV prefix is what keeps latency low. Only **standard-attention**
+> models do this. Avoid hybrid-SSM / recurrent models (e.g. `qwen3.5`) and small-window
+> sliding-attention models (e.g. `gemma3`): their architectures can't reuse the prefix, forcing a
+> full ~390ms prompt re-eval *every* call. See "Choosing a local model" below.
 
 - **Build a deterministic, bounded model** so a request can't ramble or hang: see
   [`handy-qwen.Modelfile`](./handy-qwen.Modelfile) →
   `ollama create handy-qwen -f handy-qwen.Modelfile`, then point Handy at `handy-qwen`.
 - **Ollama service env** (systemd drop-in):
   - `OLLAMA_KEEP_ALIVE=-1` — never unload, so the model stays warm and the ~1k-token prompt
-    prefix stays KV-cached between dictations (only the short transcript is re-prefilled).
+    prefix stays KV-cached between dictations (only the short transcript is re-prefilled). This
+    only pays off with a standard-attention model (see Option B intro): hybrid/SWA models re-eval
+    the whole prefix regardless.
   - `OLLAMA_NUM_PARALLEL=1` — single slot, so every request reuses that cached prefix.
   - `OLLAMA_HOST=0.0.0.0:11434` — reachable from the dictation box over LAN. This exposes an
     **unauthenticated** API, so keep it on a trusted network (or bind a specific LAN IP / firewall).
@@ -81,16 +89,29 @@ a mechanical transform a small/fast model handles reliably.
 
 [`compare-dictation-models.sh`](./compare-dictation-models.sh) A/B's models against this exact
 prompt through Handy's call path (`reasoning_effort: none`, prefix-primed), reporting exact-match
-rule-following and warm latency. Edit `models=()` to compare. Results (June 2026, RTX A2000 12GB):
+rule-following, warm latency, **and warm prompt-eval (the cache-hit check)**. Edit `models=()` to
+compare. Results (June 2026, RTX A2000 12GB):
 
-- **`qwen3.5:4b` — chosen.** Most reliable: correct number/IP/punctuation-dedup handling, no echo,
-  no spurious punctuation. ~0.4s warm.
-- `qwen3.5:2b` — ~1.5× faster (~0.3s) but deterministically injects an unspoken `?` and misses a
-  number conversion. Viable if you want minimum latency (`ollama pull qwen3.5:2b`).
-- Rejected: `gemma3:4b` (hallucinated a sentence on empty-tap), `phi4-mini` (paraphrases —
-  violates word-order preservation), `llama3.2:3b` (intrinsically echoes the few-shot examples).
-- Avoid reasoning models whose thinking you can't disable. With `reasoning_effort: none`, qwen3.5
-  runs non-thinking cleanly (no `<think>` leakage observed).
+- **`qwen2.5:7b` — chosen.** 11/11 exact-match, ~0.27s warm, cache reuses the prefix (~19ms warm
+  prompt-eval). Correct number/IP/punctuation-dedup handling, no echo, no spurious punctuation, and
+  it even handles empty-tap and leading-filler (see Known gaps — still keep the planned code guard;
+  one temp-0 run isn't a guarantee on those edge cases).
+- `qwen3:8b` — 9/11, ~0.26s, also caches (~22ms). Fine, but no better than the 7b and larger.
+- `qwen2.5:3b` — 8/11, ~0.20s (fastest), caches. Drops some number/abbreviation conversions; viable
+  only if you want absolute minimum latency.
+- **Rejected — broken cache (architectural):** `qwen3.5:4b` (the prior pick) and any `qwen3.5`
+  variant. qwen3.5 is a **hybrid SSM + interleaved-attention** model; recurrent state can't be
+  prefix-reused, so ollama re-evaluates the full ~1k-token prompt on *every* call (~390ms warm
+  prompt-eval vs ~19ms for qwen2.5). That extra ~390ms was roughly half the old ~0.64s latency.
+  `gemma3` is out for the same class of reason (small sliding-window attention). NB: the new ollama
+  engine itself caches fine (`qwen3:8b` proves it) — it's specifically the hybrid/SWA architecture
+  that breaks reuse. Measure `prompt_eval_duration`, not `prompt_eval_count` (the latter is cosmetic,
+  reporting full context size even on a cache hit).
+- **Rejected — quality:** `llama3.1:8b` (2/11 — prepends "Here is the cleaned transcript:" and leaks
+  rule commentary), `llama3.2:3b` (echoes the few-shot examples), `phi4-mini` (paraphrases — violates
+  word-order preservation), `gemma3:4b` (hallucinated a sentence on empty-tap).
+- Avoid reasoning models whose thinking you can't disable. With `reasoning_effort: none`, qwen2.5
+  runs non-thinking cleanly (it has no thinking mode); qwen3.5 also stayed clean, but lost on cache.
 
 ## Known gaps (local) — TODO
 

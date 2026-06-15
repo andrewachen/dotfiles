@@ -1,7 +1,11 @@
 # ABOUTME: Ollama Modelfile for the Handy dictation post-processing model.
-# ABOUTME: qwen3.5:4b made deterministic and length-bounded; build with:
+# ABOUTME: qwen2.5:7b made deterministic and length-bounded; build with:
 # ABOUTME:   ollama create handy-qwen -f handy-qwen.Modelfile   (then point Handy at "handy-qwen")
-FROM qwen3.5:4b
+# qwen2.5:7b (qwen2 arch, llama.cpp engine) — chosen over qwen3.5:4b because qwen3.5's hybrid-SSM
+# architecture defeats KV prefix-cache reuse, forcing a full ~390ms re-eval of the prompt on every
+# dictation. qwen2.5:7b reuses the cached prefix (~19ms warm), so despite being larger it is ~2.4x
+# faster warm AND scores higher on the rule-following bakeoff. See handy-dictation.md.
+FROM qwen2.5:7b
 
 # Deterministic output for a mechanical transform (no sampling drift / spurious punctuation).
 PARAMETER temperature 0

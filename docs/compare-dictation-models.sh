@@ -4,10 +4,11 @@
 # ABOUTME: primes the cached prefix per model, and reports exact-match rule-following + warm latency.
 set -uo pipefail
 ENDPOINT=http://localhost:11434/v1/chat/completions
+NATIVE=http://localhost:11434/api/chat   # native path exposes prompt_eval_duration for the cache check
 PROMPT_FILE="$(dirname "$0")/handy_prompt.txt"
 template="$(cat "$PROMPT_FILE")"
 marker='${output}'        # transcript placeholder in handy_prompt.txt (also Handy's variable)
-models=(qwen3.5:4b)       # add models to compare, e.g. (qwen3.5:4b qwen3.5:2b)
+models=(qwen2.5:7b)       # add models to compare, e.g. (qwen2.5:7b qwen3:8b qwen2.5:3b)
 
 inputs=(
 "um uh"
@@ -42,6 +43,26 @@ if ! curl -sf "$ENDPOINT" -H 'Content-Type: application/json' \
   echo "ERROR: cannot reach $ENDPOINT — is ollama running?"; exit 1
 fi
 
+# Warm cache check: send the full primed prompt twice via native /api/chat, report 2nd
+# prompt_eval_duration (ms). A working prefix cache collapses this to single-digit ms; a hybrid-SSM
+# or small-window-SWA model can't reuse the prefix and stays at full re-eval (~hundreds of ms).
+# Measure DURATION, not prompt_eval_count — the count is cosmetic (full context size even on a hit).
+cache_ms() {
+  local m="$1" full="$2" resp dur payload
+  for _ in 1 2; do
+    payload="$(jq -n --arg m "$m" --arg c "$full" \
+      '{model:$m,messages:[{role:"user",content:$c}],think:false,stream:false,options:{temperature:0,num_predict:1}}')"
+    resp="$(curl -s --max-time 60 "$NATIVE" -d "$payload")"
+    if printf '%s' "$resp" | jq -e '.error' >/dev/null 2>&1; then   # non-thinking models reject think param
+      payload="$(jq -n --arg m "$m" --arg c "$full" \
+        '{model:$m,messages:[{role:"user",content:$c}],stream:false,options:{temperature:0,num_predict:1}}')"
+      resp="$(curl -s --max-time 60 "$NATIVE" -d "$payload")"
+    fi
+  done
+  dur="$(printf '%s' "$resp" | jq -r '.prompt_eval_duration // 0')"
+  awk -v d="$dur" 'BEGIN{printf "%.0f", d/1e6}'
+}
+
 # Prime a model with the FULL prompt (dummy transcript) so the static prefix is KV-cached before timing.
 prime() {
   local m="$1" full="${template//"$marker"/priming}"
@@ -58,6 +79,9 @@ for m in "${models[@]}"; do
   # free VRAM so THIS model loads fully on GPU when comparing several at once
   for other in "${models[@]}"; do [ "$other" = "$m" ] || ollama stop "$other" 2>/dev/null; done
   prime "$m"; prime "$m"   # load model + cache static prefix on this endpoint/template
+  cm="$(cache_ms "$m" "${template//"$marker"/priming}")"
+  if [ "$cm" -lt 60 ]; then echo "  CACHE (warm prompt_eval): ${cm}ms  ✅ reuses prefix"
+  else echo "  CACHE (warm prompt_eval): ${cm}ms  ❌ full re-eval — wrong architecture for this use"; fi
   pass=0; total=0
   for i in "${!inputs[@]}"; do
     in="${inputs[$i]}"; exp="${expected[$i]}"
@@ -79,5 +103,5 @@ for m in "${models[@]}"; do
     printf '      exp: %s\n' "${exp:-(empty)}"
     printf '      got: %s\n' "${out:-(empty)}"
   done
-  echo "  ---- $m: $pass/$total exact-match"
+  echo "  ---- $m: $pass/$total exact-match | cache ${cm}ms"
 done
