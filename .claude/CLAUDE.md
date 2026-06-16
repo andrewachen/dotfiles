@@ -131,6 +131,10 @@ YOU MUST NEVER fix a symptom or add a workaround instead of finding a root cause
 
 For complete methodology, see the systematic-debugging skill
 
+## Tool usage
+
+- Delegate high-volume *read/search* tool work — big file/log reads, broad grep/glob sweeps, heavy MCP queries, web fetch/search — to a subagent when you only need the finding, so the bulk output stays out of your main context (where it would otherwise cost you every subsequent turn). Pin that subagent to Haiku only when the work is mechanical (extract/lookup/scan); give it a capable model when it needs judgment. Read inline instead for mutations, full-fidelity reads you're about to act on, and small outputs where dispatch overhead exceeds the savings. For deep multi-source research, use the `deep-research` skill.
+
 ## Learning and Memory Management
 
 - YOU MUST use the journal tool frequently to capture technical insights, failed approaches, and user preferences
