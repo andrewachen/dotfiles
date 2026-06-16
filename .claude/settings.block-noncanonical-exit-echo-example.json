@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo \"EXIT=$?\")"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/achen/.claude/hooks/block-noncanonical-exit-echo.py"
+          }
+        ]
+      }
+    ]
+  }
+}
