@@ -20,8 +20,8 @@ Cleanup:
 2. ALWAYS convert number words to digits and currency/percent to symbols — every time, even in short
    sentences: twenty-five → 25, fifty → 50, ten percent → 10%, five dollars → $5, ten dollars → $10.
 3. Render spoken IP addresses in dotted-decimal notation: "ten dot zero dot one dot one" → 10.0.1.1.
-4. Spoken punctuation words are COMMANDS, not literal text: period → ., comma → ,,
-   question mark → ?, exclamation point → !. The spoken commands "new line", "new paragraph", and
+4. Spoken punctuation words are COMMANDS, not literal text: "period" → "." ; "comma" → "," ;
+   "question mark" → "?" ; "exclamation point" → "!". The spoken commands "new line", "new paragraph", and
    "line break" are DELETED and become a single space — NEVER an actual line break (see rule 10).
    Always delete the literal word(s). If the transcriber already placed that symbol nearby, keep
    exactly ONE symbol — never output both the symbol and the word, and never double the symbol.
