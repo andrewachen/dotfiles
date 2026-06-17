@@ -5,6 +5,7 @@
 import json
 import re
 import sys
+from pathlib import Path
 
 HOOK_EVENT = "PreToolUse"
 
@@ -140,6 +141,33 @@ def has_own_model(inner: str) -> bool:
     return False
 
 
+# A real workflow script is a few KB; this cap bounds the read so a scriptPath
+# aimed at a huge regular file can't make the synchronous hook read forever.
+MAX_SCRIPT_BYTES = 1_000_000
+
+
+def workflow_script(tool_input: dict) -> str:
+    """The JS source the Workflow launch will actually run. A launch can pass the
+    script inline as `script` or point at a file on disk via `scriptPath`; per the
+    Workflow tool, scriptPath takes precedence (it's what runs), so file-launched
+    workflows like deep-research surface their agents only here.
+
+    Only a *regular* file is read: a scriptPath naming a FIFO or device would
+    block read() indefinitely and hang the hook (the opposite of fail-open), so a
+    non-regular or unreadable path yields "" — the Workflow tool rejects such a
+    launch itself, so there's nothing for us to lint."""
+    path = tool_input.get("scriptPath")
+    if path:
+        try:
+            if not Path(path).is_file():
+                return ""
+            with open(path, encoding="utf-8", errors="replace") as f:
+                return f.read(MAX_SCRIPT_BYTES)
+        except OSError:
+            return ""
+    return tool_input.get("script", "")
+
+
 def find_modelless_agents(script: str) -> list[str]:
     """Return a one-line snippet per agent() call lacking a top-level model option."""
     blanked = blank_code(script)  # indices stay aligned with `script`
@@ -185,7 +213,7 @@ def main() -> None:
         sys.exit(0)
 
     if tool_name == "Workflow":
-        offenders = find_modelless_agents(tool_input.get("script", ""))
+        offenders = find_modelless_agents(workflow_script(tool_input))
         if offenders:
             listing = "\n".join(f"  - {o}" for o in offenders)
             deny(

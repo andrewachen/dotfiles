@@ -3,8 +3,11 @@
 # ABOUTME: PreToolUse JSON in and asserts deny/allow. Run: python3 tests/test_*.py.
 
 import json
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 HOOK = (
@@ -58,6 +61,18 @@ def agent(model=None, tool="Agent") -> dict:
 
 def workflow(script: str) -> dict:
     return {"tool_name": "Workflow", "tool_input": {"script": script}}
+
+
+_tmp_paths: list[str] = []
+
+
+def tmp_script(content: str) -> str:
+    """Write content to a temp .js file (cleaned up at exit) and return its path."""
+    fd, path = tempfile.mkstemp(suffix=".js")
+    with os.fdopen(fd, "w") as f:
+        f.write(content)
+    _tmp_paths.append(path)
+    return path
 
 
 def main() -> int:
@@ -250,6 +265,95 @@ def main() -> int:
     """
     expect_allow("Workflow block comment ignored", workflow(block_comment))
 
+    # --- Workflow scriptPath-lint path ---
+    # A Workflow can be launched from a .js file on disk via `scriptPath` instead
+    # of an inline `script` (this is how deep-research and any file-launched
+    # workflow run). The hook must read that file and lint it; otherwise every
+    # model-less agent() in it silently inherits the session model.
+    path_one_missing = tmp_script(
+        "const a = await agent('do x', {model: 'haiku'})\n"
+        "const b = await agent('do y', {schema: S})\n"
+    )
+    expect_deny(
+        "Workflow scriptPath one agent missing model",
+        {"tool_name": "Workflow", "tool_input": {"scriptPath": path_one_missing}},
+        "do y",
+    )
+
+    path_all_model = tmp_script(
+        "const a = await agent('do x', {model: 'haiku'})\n"
+        "const b = await agent('do y', {schema: S, model: 'sonnet'})\n"
+    )
+    expect_allow(
+        "Workflow scriptPath all agents have model",
+        {"tool_name": "Workflow", "tool_input": {"scriptPath": path_all_model}},
+    )
+
+    # Per the Workflow tool, scriptPath takes precedence over inline script — the
+    # file is what actually runs. A clean file must pass even if a stale dirty
+    # script is also present in the payload.
+    clean_path = tmp_script("const a = await agent('go', {model: 'haiku'})\n")
+    expect_allow(
+        "Workflow scriptPath wins over dirty inline script",
+        {
+            "tool_name": "Workflow",
+            "tool_input": {
+                "scriptPath": clean_path,
+                "script": "const a = await agent('go', {schema: S})",
+            },
+        },
+    )
+
+    # ...and the reverse: a dirty file must be denied even if a clean inline
+    # script is present, because the file is what runs.
+    dirty_path = tmp_script("const a = await agent('go', {schema: S})\n")
+    expect_deny(
+        "Workflow dirty scriptPath wins over clean inline script",
+        {
+            "tool_name": "Workflow",
+            "tool_input": {
+                "scriptPath": dirty_path,
+                "script": "const a = await agent('go', {model: 'haiku'})",
+            },
+        },
+        "go",
+    )
+
+    # A scriptPath that can't be read can't be linted — the Workflow tool itself
+    # rejects an unreadable path, so failing open here is harmless.
+    expect_allow(
+        "Workflow nonexistent scriptPath fails open",
+        {"tool_name": "Workflow", "tool_input": {"scriptPath": "/nonexistent/wf.js"}},
+    )
+
+    # A scriptPath pointing at a non-regular file (FIFO, device, dir) must NOT be
+    # read: reading a FIFO with no writer blocks forever, which would hang the
+    # synchronous hook and block the dispatch — the opposite of failing open.
+    # The hook must detect it isn't a regular file and allow promptly.
+    fifo_dir = tempfile.mkdtemp()
+    _tmp_paths.append(fifo_dir)  # rmtree handles the dir + fifo at cleanup
+    fifo_path = os.path.join(fifo_dir, "wf.js")
+    os.mkfifo(fifo_path)
+    ran += 1
+    try:
+        result = subprocess.run(
+            [str(HOOK)],
+            input=json.dumps(
+                {"tool_name": "Workflow", "tool_input": {"scriptPath": fifo_path}}
+            ),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            failures.append(f"FAIL [Workflow FIFO scriptPath]: non-zero exit {result.returncode}")
+        elif deny_reason(result.stdout) is not None:
+            failures.append(
+                f"FAIL [Workflow FIFO scriptPath]: expected ALLOW, got DENY; out={result.stdout!r}"
+            )
+    except subprocess.TimeoutExpired:
+        failures.append("FAIL [Workflow FIFO scriptPath]: hook hung reading the FIFO (timed out)")
+
     # --- Fail-open / passthrough cases ---
     ran += 1
     code, out = run({"tool_name": "Bash", "tool_input": {"command": "ls"}})
@@ -279,6 +383,12 @@ def main() -> int:
     elif deny_reason(out) is None:
         # No tool_input means no model → this SHOULD deny like any model-less Agent.
         failures.append(f"FAIL [Agent no tool_input]: expected DENY, got ALLOW; out={out!r}")
+
+    for p in _tmp_paths:
+        try:
+            shutil.rmtree(p) if os.path.isdir(p) else os.unlink(p)
+        except OSError:
+            pass
 
     total = ran
     if failures:
