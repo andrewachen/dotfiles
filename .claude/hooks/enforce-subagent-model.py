@@ -196,7 +196,7 @@ def main() -> None:
         # instead OVERRIDES the frontmatter and silently routes the work to the
         # session / cloud-default model, defeating the point (deny).
         subagent = tool_input.get("subagent_type") or ""
-        if subagent.startswith(("local-", "cloud-")):
+        if subagent.startswith(("local-", "cloud-", "personal-")):
             if tool_input.get("model"):
                 deny(
                     "`local-*` and `cloud-*` subagents pin their own model in "
