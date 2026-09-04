@@ -120,7 +120,7 @@ Dispatch both in a single message so they run concurrently — wall-clock stays 
 
 ## Markdown review serving
 
-When a superpowers skill (brainstorming, writing-plans, executing-plans, or any other) is about to ask Andrew to review a `.md` plan, spec, or design doc, FIRST invoke the `grip-review` skill on the absolute file path. The skill prints a non-localhost URL (e.g. `http://<lan-ip>:6531/...`) — include that URL in the review prompt to Andrew so he can open it from anywhere on his LAN.
+When a superpowers skill (brainstorming, writing-plans, executing-plans, or any other) is about to ask Andrew to review a `.md` plan, spec, or design doc, FIRST invoke the `grip-review` skill on the absolute file path. The skill prints a non-localhost URL (e.g. `http://<lan-ip>:6831/...`) — include that URL in the review prompt to Andrew so he can open it from anywhere on his LAN.
 
 Skip this for code review or for arbitrary markdown files unrelated to a superpowers review gate. If `grip-review` exits non-zero, fall back to asking Andrew to read the file directly and note the failure.
 

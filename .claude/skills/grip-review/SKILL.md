@@ -32,7 +32,7 @@ Run the helper with the absolute path to the markdown file:
 /home/achen/.claude/skills/grip-review/serve.sh /absolute/path/to/file.md
 ```
 
-The script prints a single URL to stdout on success (e.g. `http://<lan-ip>:6531/path/to/file.md`). Pipe that URL into your review prompt to Andrew, e.g.:
+The script prints a single URL to stdout on success (e.g. `http://<lan-ip>:6831/path/to/file.md`). Pipe that URL into your review prompt to Andrew, e.g.:
 
 > "Plan written to `<path>`. View it at `<URL>`. Let me know what to change."
 

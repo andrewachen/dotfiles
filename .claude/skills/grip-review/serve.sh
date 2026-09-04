@@ -4,11 +4,15 @@
 
 set -u
 
+# Base 6700 keeps the whole 6700-7699 band clear of Chromium's blocked-port
+# list (net/base/port_util.cc kRestrictedPorts): the last blocked port below it
+# is 6697 (IRC+TLS) and the next above is 10080. A grip on a blocked port still
+# serves fine, but Chromium refuses to fetch it with ERR_UNSAFE_PORT.
 pick_port() {
   local sid="${CLAUDE_CODE_SESSION_ID:-no-session}"
   local hex
   hex=$(printf '%s' "$sid" | md5sum | cut -c1-3)
-  echo $((6420 + 0x$hex % 1000))
+  echo $((6700 + 0x$hex % 1000))
 }
 
 if [ "${1:-}" = "--dry-run-port" ]; then

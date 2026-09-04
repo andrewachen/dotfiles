@@ -57,11 +57,12 @@ else
   FAIL=$((FAIL+1)); echo "  FAIL: different session ids -> different ports (both $PORT_A)"
 fi
 
-# Port must fall in expected range
-if [ "$PORT_A" -ge 6420 ] && [ "$PORT_A" -le 7419 ]; then
-  PASS=$((PASS+1)); echo "  PASS: port in 6420-7419 range"
+# Port must fall in expected range (shifted above Chromium's blocked-port list;
+# the last blocked port below this band is 6697).
+if [ "$PORT_A" -ge 6700 ] && [ "$PORT_A" -le 7699 ]; then
+  PASS=$((PASS+1)); echo "  PASS: port in 6700-7699 range"
 else
-  FAIL=$((FAIL+1)); echo "  FAIL: port $PORT_A out of range 6420-7419"
+  FAIL=$((FAIL+1)); echo "  FAIL: port $PORT_A out of range 6700-7699"
 fi
 
 # --- Test: launch grip, capture URL, write PID file ---
