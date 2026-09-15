@@ -6,7 +6,6 @@ vscode/extensions
 .claude/.credentials.json
 .claude/.mcp.json
 .claude/history.jsonl
-.claude/local.md
 .claude/cache/
 .claude/debug/
 .claude/projects/
