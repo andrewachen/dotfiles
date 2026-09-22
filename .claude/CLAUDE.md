@@ -123,6 +123,8 @@ When a superpowers review fires — per-task quality review in `superpowers:suba
 
 **The two seats must be different model families.** Because `reviewers:codex` is pinned to a GPT model, the superpowers reviewer must be a NON-GPT model. Assigning that seat to a GPT delegate — including a different GPT capability tier, which is still the same family — spends a second full review for no independent read. Before dispatching, confirm the reviewer's model family differs from codex's. If no independent reviewer is available, do not review on the model under review: escalate to a non-GPT session model or ask Andrew.
 
+**Both review seats are dispatched as FRESH agents, NEVER `subagent_type: "fork"`.** A fork inherits the author's session context — opinions, rationalizations, dismissed alternatives — and stops being an independent read. Fill the `code-reviewer.md` template from `superpowers:requesting-code-review` with the description, plan, and base/head SHAs instead of leaning on inherited context.
+
 Dispatch both in a single message so they run concurrently — wall-clock stays flat, only token cost stacks. If Andrew says "skip codex" or "final only" in a session, honor it for the rest of that session without re-asking.
 
 ## Markdown review serving
