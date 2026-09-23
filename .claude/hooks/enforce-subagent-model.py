@@ -19,6 +19,37 @@ AGENT_CALL = re.compile(r"(?<![.\w])agent\s*\(")
 MODEL_KEY = re.compile(r"""(?:\bmodel|(['"])model\1)\s*:""")
 
 
+def strip_model(tool_input: dict, subagent: str) -> None:
+    """Allow the dispatch with `model` REMOVED (updatedInput) plus a warning.
+    Denying caused retry loops (2026-09-23: a gpt-6-sol main loop resent the
+    identical refused Agent call 5-8x per session across three sessions — the
+    denial never landed as "your input is wrong"). The frontmatter pin is the
+    thing being protected; stripping preserves it while letting the work
+    proceed on the intended model. The model param is never honored for
+    local-*/cloud-*/personal-* agents, so dropping it loses nothing."""
+    stripped = tool_input.get("model")
+    updated = {k: v for k, v in tool_input.items() if k != "model"}
+    json.dump(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": HOOK_EVENT,
+                "permissionDecision": "allow",
+                "updatedInput": updated,
+            },
+            "systemMessage": (
+                f"NOTE: your Agent/Task dispatch to `{subagent}` included "
+                f"model={stripped!r}; the hook STRIPPED it because that agent "
+                "pins its own model in frontmatter (a tier param would silently "
+                "reroute the work to the session/default model). The dispatch "
+                "proceeded on the agent's pinned model. Omit `model` for "
+                "local-*/cloud-*/personal-* agents going forward."
+            ),
+        },
+        sys.stdout,
+    )
+    sys.exit(0)
+
+
 def deny(reason: str) -> None:
     json.dump(
         {
@@ -194,20 +225,13 @@ def main() -> None:
         # won't accept. That frontmatter only wins when the dispatch is model-less,
         # so model-less local-*/cloud-* is the intended path (allow). A tier param
         # instead OVERRIDES the frontmatter and silently routes the work to the
-        # session / cloud-default model, defeating the point (deny).
+        # session / cloud-default model, defeating the point — STRIP it (allow +
+        # updatedInput), never deny: denials caused identical-retry loops on GPT
+        # main loops (the refusal never landed as "your input is wrong").
         subagent = tool_input.get("subagent_type") or ""
         if subagent.startswith(("local-", "cloud-", "personal-")):
             if tool_input.get("model"):
-                deny(
-                    "`local-*` and `cloud-*` subagents pin their own model in "
-                    "frontmatter with a full gateway model id / deployment. Dispatch "
-                    "them WITHOUT a `model` param — a `model` of any kind (a tier "
-                    "like sonnet/opus/haiku/fable, or `inherit`) overrides the "
-                    "frontmatter and silently routes the work to the session / "
-                    "cloud-default model instead of the pinned gateway deployment. "
-                    "To fix THIS call: remove the `model` key entirely and retry "
-                    "the same dispatch unchanged otherwise."
-                )
+                strip_model(tool_input, subagent)
             sys.exit(0)
         if not tool_input.get("model"):
             deny(

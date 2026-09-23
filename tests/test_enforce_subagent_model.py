@@ -107,6 +107,32 @@ def main() -> int:
                 f"FAIL [{label}]: deny reason missing {must_mention!r}; reason={reason!r}"
             )
 
+    def expect_strip(label: str, payload: dict):
+        """The named-agent model param must be STRIPPED: allow with updatedInput
+        lacking `model` and a systemMessage warning — never a deny (denials loop)."""
+        nonlocal ran
+        ran += 1
+        code, out = run(payload)
+        if code != 0:
+            failures.append(f"FAIL [{label}]: non-zero exit {code}")
+            return
+        if deny_reason(out) is not None:
+            failures.append(f"FAIL [{label}]: expected STRIP (allow+updatedInput), got DENY")
+            return
+        try:
+            hso = json.loads(out)["hookSpecificOutput"]
+        except (json.JSONDecodeError, KeyError):
+            failures.append(f"FAIL [{label}]: no hookSpecificOutput for the strip; out={out!r}")
+            return
+        updated = hso.get("updatedInput") or {}
+        if "model" in updated:
+            failures.append(f"FAIL [{label}]: updatedInput still carries model={updated.get('model')!r}")
+        if "subagent_type" not in updated:
+            failures.append(f"FAIL [{label}]: updatedInput dropped subagent_type: {updated!r}")
+        msg = json.loads(out).get("systemMessage", "")
+        if "model" not in msg:
+            failures.append(f"FAIL [{label}]: systemMessage does not warn about the stripped model: {msg!r}")
+
     # --- Agent / Task path ---
     expect_allow("Agent with model=haiku", agent(model="haiku"))
     expect_allow("Agent with model=sonnet", agent(model="sonnet"))
@@ -125,47 +151,39 @@ def main() -> int:
     expect_allow("Agent local-* no model", agent(subagent_type="local-implementer"))
     # The prefix, not an exact name, is what qualifies — any local-* is allowed.
     expect_allow("Agent local-anything no model", agent(subagent_type="local-anything"))
-    # A tier param on a local-* agent overrides its frontmatter and silently
-    # routes the work to the cloud instead of the local gateway model → deny.
-    expect_deny(
+    # A tier param on a local-* agent would override its frontmatter pin →
+    # STRIPPED (never denied — denials loop; see the cloud-* comment below).
+    expect_strip(
         "Task local-* with model",
         agent(model="sonnet", tool="Task", subagent_type="local-implementer"),
-        must_mention="cloud",
     )
     # `model: "inherit"` is the general escape hatch (allowed on a normal agent),
     # but on a local-* agent it still routes to the session/cloud model, so it's
     # denied like any tier — and the deny must name `inherit` so a user who reached
     # for the documented escape hatch understands why it's refused here.
-    expect_deny(
+    expect_strip(
         "Agent local-* with inherit",
         agent(model="inherit", subagent_type="local-x"),
-        must_mention="inherit",
     )
     # --- cloud-* named agents pin their model in frontmatter too ---
     # Same contract as local-*: a `cloud-*` subagent (e.g. cloud-luna) pins a
     # gateway DEPLOYMENT name in frontmatter and is dispatched model-less on
-    # purpose. A tier param overrides the pin and misroutes to the session /
-    # cloud-default model instead of the pinned deployment.
+    # purpose. A tier param would override the pin and misroute the work, so
+    # the hook STRIPS the key and lets the dispatch proceed on the pinned model
+    # (deny caused retry loops: 2026-09-23, a gpt-6-sol main loop resent the
+    # identical refused call 5-8x per session, three sessions running — the
+    # denial message never landed as "your input is wrong". Stripping makes the
+    # failure structurally impossible: the call goes through correctly and the
+    # warning tells the model what happened).
     expect_allow("Agent cloud-* no model", agent(subagent_type="cloud-luna"))
     expect_allow("Agent cloud-anything no model", agent(subagent_type="cloud-anything"))
-    expect_deny(
-        "Task cloud-* with model",
+    expect_strip(
+        "Task cloud-* with model is stripped, not denied",
         agent(model="sonnet", tool="Task", subagent_type="cloud-luna"),
-        must_mention="cloud",
     )
-    expect_deny(
-        "Agent cloud-* with inherit",
+    expect_strip(
+        "Agent cloud-* with inherit is stripped, not denied",
         agent(model="inherit", subagent_type="cloud-x"),
-        must_mention="inherit",
-    )
-    # The denial must name the FIX, not just the rule: a main loop that only
-    # hears "don't do that" retries the identical call in a loop (observed
-    # 2026-09-23: a gpt-6-sol main loop repeated the same model-param dispatch
-    # 8x in 49s). The corrective sentence breaks the loop.
-    expect_deny(
-        "Agent cloud-* with model names the correction",
-        agent(model="sonnet", subagent_type="cloud-luna"),
-        must_mention="remove the `model` key",
     )
 
     # --- personal-* named agents pin their model in frontmatter too ---
@@ -176,15 +194,13 @@ def main() -> int:
     # deployment.
     expect_allow("Agent personal-* no model", agent(subagent_type="personal-local-implementer"))
     expect_allow("Agent personal-anything no model", agent(subagent_type="personal-anything"))
-    expect_deny(
+    expect_strip(
         "Task personal-* with model",
         agent(model="sonnet", tool="Task", subagent_type="personal-local-implementer"),
-        must_mention="cloud",
     )
-    expect_deny(
+    expect_strip(
         "Agent personal-* with inherit",
         agent(model="inherit", subagent_type="personal-x"),
-        must_mention="inherit",
     )
 
     # A real (non-local) subagent_type present in the payload must still be held
