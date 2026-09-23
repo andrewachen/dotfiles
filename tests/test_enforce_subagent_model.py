@@ -158,6 +158,15 @@ def main() -> int:
         agent(model="inherit", subagent_type="cloud-x"),
         must_mention="inherit",
     )
+    # The denial must name the FIX, not just the rule: a main loop that only
+    # hears "don't do that" retries the identical call in a loop (observed
+    # 2026-09-23: a gpt-6-sol main loop repeated the same model-param dispatch
+    # 8x in 49s). The corrective sentence breaks the loop.
+    expect_deny(
+        "Agent cloud-* with model names the correction",
+        agent(model="sonnet", subagent_type="cloud-luna"),
+        must_mention="remove the `model` key",
+    )
 
     # --- personal-* named agents pin their model in frontmatter too ---
     # Same contract as local-* and cloud-*: a `personal-*` subagent (e.g.

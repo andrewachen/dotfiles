@@ -204,7 +204,9 @@ def main() -> None:
                     "them WITHOUT a `model` param — a `model` of any kind (a tier "
                     "like sonnet/opus/haiku/fable, or `inherit`) overrides the "
                     "frontmatter and silently routes the work to the session / "
-                    "cloud-default model instead of the pinned gateway deployment."
+                    "cloud-default model instead of the pinned gateway deployment. "
+                    "To fix THIS call: remove the `model` key entirely and retry "
+                    "the same dispatch unchanged otherwise."
                 )
             sys.exit(0)
         if not tool_input.get("model"):
