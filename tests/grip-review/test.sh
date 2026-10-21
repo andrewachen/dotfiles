@@ -231,6 +231,40 @@ kill "$SPEC_PID" 2>/dev/null
 rm -rf "$SP_ROOT"
 rm -f "$PID_FILE"
 
+# --- Test: reuse requires an EXACT root match, not merely an ancestor ---
+# The skill scans the directory go-grip will root at before serving; if a
+# broader-rooted grip (e.g. rooted at docs/) were reused for a deeper file
+# (docs/superpowers/specs/x.md), markdown outside the scanned root would be
+# served unchecked. So a grip rooted at a parent dir must NOT be reused for
+# a file in a subdirectory: a second grip rooted at the subdir is launched.
+DIR_PAR=$(mktemp -d)
+mkdir -p "$DIR_PAR/sub"
+echo "# parent" > "$DIR_PAR/a.md"
+echo "# deep" > "$DIR_PAR/sub/b.md"
+
+"$SERVE" "$DIR_PAR/a.md" >/dev/null
+PAR_PID=$(awk 'NR==1{print $1}' "$PID_FILE")
+
+URL_DEEP=$("$SERVE" "$DIR_PAR/sub/b.md")
+DEEP_PID=$(awk 'NR==2{print $1}' "$PID_FILE")
+
+assert_contains "deep file served from its own dir" "$URL_DEEP" "/b.md"
+if [ -n "$DEEP_PID" ] && [ "$DEEP_PID" != "$PAR_PID" ]; then
+  PASS=$((PASS+1)); echo "  PASS: subdir file gets its own grip (no ancestor reuse)"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: ancestor-rooted grip was reused (pid $DEEP_PID)"
+fi
+
+if kill -0 "$PAR_PID" 2>/dev/null && kill -0 "$DEEP_PID" 2>/dev/null; then
+  PASS=$((PASS+1)); echo "  PASS: both grips alive after exact-root split"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: a grip died after exact-root split"
+fi
+
+kill "$PAR_PID" "$DEEP_PID" 2>/dev/null
+rm -rf "$DIR_PAR"
+rm -f "$PID_FILE"
+
 # --- Test: stale PID file with mismatched starttime does NOT kill unrelated process ---
 sleep 60 &
 VICTIM=$!
@@ -343,6 +377,127 @@ fi
 
 kill "$HOOK_VICTIM" 2>/dev/null
 rm -f "$HOOK_VICT_FILE"
+
+# --- Test: escape-currency-dollars.py escapes currency, preserves code and math ---
+# go-grip's MathJax extension pairs any two $ in one block as inline math, so
+# currency like "$1,200 ... $3,400" italicizes the prose between the amounts and
+# swallows **bold**. The skill's serve step must escape every currency $ as \$,
+# while leaving code (a backslash there would render literally) and real math
+# ($x^2$ — no digit after the opening $) untouched.
+ESC="$DOTFILES/.claude/skills/grip-review/escape-currency-dollars.py"
+
+ESC_DIR=$(mktemp -d)
+ESC_MD="$ESC_DIR/sample.md"
+cat > "$ESC_MD" <<'EOF'
+The migration costs $1,200 up front and **$3,400 per month** after that.
+A pre-escaped amount \$50 must stay escaped, not double-escaped.
+Non-currency $vars and real math $x^2$ must stay untouched.
+
+```bash
+export MONTHLY_BUDGET=$3400
+```
+
+Run `awk '{sum+=$100}' ledger` to total the ledger.
+EOF
+
+ESC_OUT=$("$ESC" "$ESC_MD")
+# Exactly two currency $ in prose: $1,200 and $3,400.
+assert_contains "escape reports 2 replacements" "$ESC_OUT" "2"
+
+PROSE=$(sed -n '1,3p' "$ESC_MD")
+assert_contains "currency $ escaped" "$PROSE" '\$1,200 up front and **\$3,400 per month**'
+assert_contains "pre-escaped \$50 not double-escaped" "$PROSE" '\$50'
+assert_contains "non-currency \$vars untouched" "$PROSE" '$vars'
+assert_contains "real math \$x^2\$ untouched" "$PROSE" '$x^2$'
+
+FENCE=$(sed -n '6p' "$ESC_MD")
+assert_contains "code fence \$ untouched" "$FENCE" '$3400'
+
+SPAN=$(sed -n '9p' "$ESC_MD")
+assert_contains "inline code \$ untouched" "$SPAN" 'sum+=$100'
+
+# Idempotent: a second pass must change nothing.
+ESC_OUT2=$("$ESC" "$ESC_MD")
+assert_contains "second pass reports 0 replacements" "$ESC_OUT2" "0"
+
+# Directory arguments NEVER write — a bulk directory rewrite is the footgun
+# this design exists to avoid. A directory arg scans read-only and reports
+# only the affected files; escaping happens per single file, chosen by
+# judgment. --check does the same for a single file argument.
+ESC_DIR2=$(mktemp -d)
+mkdir -p "$ESC_DIR2/sub" "$ESC_DIR2/.hidden"
+printf 'Costs $99 today.\n' > "$ESC_DIR2/with-currency.md"
+printf 'No money here.\n' > "$ESC_DIR2/clean.md"
+printf 'Owes $7 to $12 in prose.\n' > "$ESC_DIR2/sub/nested.md"
+printf 'Hidden $5 note.\n' > "$ESC_DIR2/.hidden/secret.md"
+printf 'Binary \xff\xfe here.\n' > "$ESC_DIR2/nonutf8.md"
+
+ESC_DIR_OUT=$("$ESC" "$ESC_DIR2" 2>&1)
+assert_contains "dir scan reports affected sibling" "$ESC_DIR_OUT" "with-currency.md: 1 unescaped currency \$"
+assert_contains "dir scan reports affected nested" "$ESC_DIR_OUT" "sub/nested.md: 2 unescaped currency \$"
+if echo "$ESC_DIR_OUT" | grep -qF "clean.md"; then
+  FAIL=$((FAIL+1)); echo "  FAIL: dir scan lists clean file (noise)"
+else
+  PASS=$((PASS+1)); echo "  PASS: dir scan omits clean file"
+fi
+if echo "$ESC_DIR_OUT" | grep -qF ".hidden"; then
+  FAIL=$((FAIL+1)); echo "  FAIL: dir scan descends into hidden dir"
+else
+  PASS=$((PASS+1)); echo "  PASS: dir scan skips hidden dirs"
+fi
+assert_contains "dir scan leaves sibling unmodified" "$(cat "$ESC_DIR2/with-currency.md")" 'Costs $99 today.'
+assert_contains "dir scan leaves nested unmodified" "$(cat "$ESC_DIR2/sub/nested.md")" 'Owes $7 to $12 in prose.'
+if echo "$ESC_DIR_OUT" | grep -qF "nonutf8.md"; then
+  PASS=$((PASS+1)); echo "  PASS: dir scan reports non-UTF-8 file as error"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: dir scan swallowed non-UTF-8 file silently"
+fi
+
+# Escaping happens per file: the sibling in scope gets escaped, the rest of
+# the tree stays as-is.
+"$ESC" "$ESC_DIR2/with-currency.md" >/dev/null
+assert_contains "per-file escape rewrites sibling" "$(cat "$ESC_DIR2/with-currency.md")" '\$99'
+assert_contains "per-file escape leaves nested alone" "$(cat "$ESC_DIR2/sub/nested.md")" 'Owes $7 to $12 in prose.'
+
+# --check on a single file: reports the count, writes nothing.
+ESC_CHECK_FILE=$("$ESC" --check "$ESC_DIR2/sub/nested.md")
+assert_contains "check on single file reports count" "$ESC_CHECK_FILE" "2 unescaped currency \$"
+assert_contains "check left single file unmodified" "$(cat "$ESC_DIR2/sub/nested.md")" 'Owes $7 to $12 in prose.'
+
+# A nonexistent path is an error, not silence.
+ESC_MISSING_OUT=$("$ESC" "$ESC_DIR2/nope.md" 2>&1)
+ESC_MISSING_RC=$?
+if [ "$ESC_MISSING_RC" -ne 0 ] && echo "$ESC_MISSING_OUT" | grep -qF "no such file or directory"; then
+  PASS=$((PASS+1)); echo "  PASS: nonexistent path errors with nonzero exit"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: nonexistent path rc=$ESC_MISSING_RC out=$ESC_MISSING_OUT"
+fi
+
+# A bad arg must not suppress a good arg's scan summary (per-arg error flag).
+ESC_MIXED=$("$ESC" "$ESC_DIR2/nope.md" "$ESC_DIR2" 2>&1)
+assert_contains "mixed args still summarize the good dir" "$ESC_MIXED" "of 4 markdown files scanned; see errors above"
+
+# Partial summary with exactly one readable file: the noun describes the total
+# set, so it must pluralize from the scanned count, not the successful count.
+ESC_PART=$(mktemp -d)
+printf 'Costs $99 today.\n' > "$ESC_PART/good.md"
+printf 'Binary \xff\xfe here.\n' > "$ESC_PART/bad.md"
+ESC_PART_OUT=$("$ESC" "$ESC_PART" 2>&1)
+assert_contains "partial summary pluralizes from scanned count" "$ESC_PART_OUT" "1 of 2 markdown files scanned"
+rm -rf "$ESC_PART"
+
+rm -rf "$ESC_DIR2"
+
+# CRLF files must keep their line endings: reading in default text mode
+# translates \r\n to \n, so a rewrite would silently reflow the whole file.
+ESC_CRLF=$(mktemp --suffix=.md)
+printf 'Costs $99 total.\r\nSecond line.\r\n' > "$ESC_CRLF"
+"$ESC" "$ESC_CRLF" >/dev/null
+CR_COUNT=$(tr -cd '\r' < "$ESC_CRLF" | wc -c)
+assert_eq "CRLF file keeps its carriage returns" "$CR_COUNT" "2"
+assert_contains "CRLF file still escaped" "$(cat "$ESC_CRLF")" '\$99'
+rm -f "$ESC_CRLF"
+rm -rf "$ESC_DIR"
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

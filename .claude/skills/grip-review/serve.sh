@@ -79,17 +79,11 @@ urlpath() {
   python3 -c 'import sys, urllib.parse; sys.stdout.write(urllib.parse.quote(sys.argv[1], safe="/"))' "$1"
 }
 
-# True if directory $1 is an ancestor-or-equal of file $2 (so a grip rooted at
-# $1 already serves $2).
-covers() {
-  case "$2" in
-    "$1"/*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 # Walk the existing session grips: keep the live ones, drop the dead (pruning
-# the PID file), and if any live grip already covers this file, reuse it.
+# the PID file), and if any live grip roots at exactly the root this file
+# would get, reuse it. Ancestor roots are NOT reused: the served root must be
+# deterministic (it's the directory the skill's currency scan covers), and a
+# broader ancestor grip would silently expose markdown outside that scan.
 KEEP=""
 REUSE_HOST=""
 REUSE_PORT=""
@@ -104,7 +98,7 @@ if [ -f "$PID_FILE" ]; then
     KEEP="${KEEP}${P_PID} ${P_START} ${P_HOST} ${P_PORT} ${P_ROOT}
 "
     USED_PORTS="${USED_PORTS}${P_PORT} "
-    if [ -z "$REUSE_HOST" ] && covers "$P_ROOT" "$FABS"; then
+    if [ -z "$REUSE_HOST" ] && [ "$P_ROOT" = "$ROOT" ]; then
       REUSE_HOST="$P_HOST"; REUSE_PORT="$P_PORT"; REUSE_ROOT="$P_ROOT"
     fi
   done < "$PID_FILE"
