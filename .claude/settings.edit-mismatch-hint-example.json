@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolBatch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/achen/.claude/hooks/edit-mismatch-hint.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
