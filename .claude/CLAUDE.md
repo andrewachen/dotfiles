@@ -82,6 +82,9 @@ When asked to do something, just do it, including the obvious safe follow-up wor
 
 YOU MUST name code by what it does in the domain, not how it's implemented or its history.
 YOU MUST write comments explaining WHAT and WHY, never temporal context or what changed.
+NEVER reference ephemeral work artifacts (task numbers, plan items, ledger entries) in code
+or comments - superpowers task/plan/ledger documents are never persisted, so "this is from
+task N" is meaningless to any future reader. Explain the code's own rationale instead.
 
 
 ## Version Control
