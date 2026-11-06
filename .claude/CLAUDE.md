@@ -74,6 +74,8 @@ When asked to do something, just do it, including the obvious safe follow-up wor
 - YOU MUST NOT manually change whitespace that does not affect execution or output. Otherwise, use a formatting tool.
 - Fix failing tests, failing lints, and broken builds immediately when you find them, even if you didn't cause them. Don't ask permission to fix bugs. Architectural issues or design smells you notice along the way go in your journal; raise them with me instead of fixing them on the spot.
 
+- Language-specific rules live in personal style skills: invoke `java-style` for Java/Kotlin work and Gradle build scripts, `python-style` for Python work.
+
 
 
 ## Naming and Comments
@@ -159,12 +161,11 @@ For complete methodology, see the systematic-debugging skill
 - Track patterns in user feedback to improve collaboration over time
 - When you notice something that should be fixed but is unrelated to your current task, document it in your journal rather than fixing it immediately
 
-## Personal preferences
+## Personal rules
 
-- Prefer `uv` for Python package management: `uv run <script>` to execute, `uv add <pkg>` to install; no `requirements.txt`.
-- For Python syntax checks use `pyparse FILE` (wrapper around `ast.parse`, no `.pyc` side effects); avoid `python3 -c 'import ast; ast.parse(...)'` one-liners and `python3 -m py_compile` (writes `__pycache__/` litter).
 - Prefer `rg` (ripgrep) over recursive grep for code search — faster and respects `.gitignore`. `rg` is recursive by DEFAULT: NEVER pass `-r` or `-R`, they are not "recursive" here. In `rg`, `-r` means `--replace`, so `rg -rn foo` silently replaces every match with the literal `n` (exit 0, no error) instead of searching. `-R` is not a flag at all (hard error). Short flags that DO mean the same thing as grep: `-n -i -l -w -F -c -v -o -x -b -A/-B/-C`. But several DIVERGE, so don't assume grep semantics: `-s` (rg: case-sensitive, not suppress-errors), `-h` (rg: --help, not no-filename), `-I` (rg: --no-filename, not ignore-binary), `-L` (rg: --follow, not files-without-match). `-t`/`-g` are rg-only (type/glob filter, no grep equivalent). To search a directory other than cwd, pass it as a path argument (`rg pattern /some/path`) rather than `cd`-ing there first; only omit the path when searching the current cwd.
 - Prefer the `gh` CLI over anonymous HTTP whenever fetching from GitHub — it authenticates, dodging the low anonymous rate limits that return 429s. Rewrite `raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}` and `github.com/{owner}/{repo}/blob/{ref}/{path}` fetches to `gh api repos/{owner}/{repo}/contents/{path}?ref={ref} -H "Accept: application/vnd.github.raw+json"` (raw URLs silently ignore auth tokens, so `gh api` is the only authenticated path to file content). Use `gh` / `gh api` for releases, PRs, issues, and REST calls too, rather than anonymous WebFetch or curl.
+- GitHub Pages sites (`*.github.io` and custom-domain Pages) are backed by a repo. ALWAYS prefer fetching the site's source markdown from the backing repo via `gh api` over fetching the rendered `.io` page — it avoids rate limits on the served site and gets you the exact source instead of generated HTML. Locating the backing source (repo, branch, `docs/` dir) is part of the fetch.
 - Prefer `jq` over Python for parsing or extracting data from JSON — `jq '.path.to.value'`, `jq -r` for raw strings, `jq @uri`/`@csv`/`@tsv` for encoding. Reach for Python only when the transform genuinely needs it (stateful logic, cross-record joins, non-JSON glue); simple field access, filtering, and reshaping belong in `jq`.
 - NEVER remove code comments unless you can PROVE they are actively false.
 - NEVER make code changes unrelated to the current task. Document follow-ups in the journal rather than fixing them inline.

@@ -1,16 +1,25 @@
 ---
 name: java-style
-description: Andrew's personal Java and Kotlin style rules — linter hygiene, Guava/Apache Commons bias, test access patterns, constant and import conventions. Complementary to (not overlapping with) the Netflix-generic java-context skill.
-when_to_use: When writing, editing, or reviewing Java or Kotlin source files. When deciding between Guava/Apache Commons vs. hand-rolled helpers. When adding a test that needs access to a private method. When importing a constant from an inner class or enum.
+description: Andrew's personal Java and Kotlin style rules — linter hygiene, Guava/Apache Commons bias, test access patterns, constant and import conventions. Additive to the generic java-context skill.
+when_to_use: When writing, editing, or reviewing Java or Kotlin source files, or Gradle build scripts (Groovy or Kotlin DSL). When deciding between Guava/Apache Commons vs. hand-rolled helpers. When adding a test that needs access to a private method. When importing a constant from an inner class or enum.
 version: 1.0.0
-languages: java, kotlin
+languages: java, kotlin, groovy
 ---
 
 # Java Style
 
 ## Overview
 
-Personal style rules beyond what a linter catches. Apply alongside the Netflix-generic java-context skill — these don't replace it.
+Personal style rules beyond what a linter catches; additive to the generic java-context skill.
+
+## Nullness (JSR-305)
+
+All of our Java code declares nullness via JSR-305 annotations (`javax.annotation.Nonnull`/`@Nullable`, often package-wide via `@ParametersAreNonnullByDefault`). Trust them:
+
+- Do NOT add defensive null checks, ternary null guards, or null-to-exception mappings for annotated-non-null members — even when calling external/untrusted producers (Hollow feeds, gRPC clients). A producer that violates its own annotation fails loudly (NPE) by design; don't guard for it.
+- Add null checks only where the API declares `@Nullable` (or documents null as possible without an annotation).
+- SpotBugs `RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE` is a real finding under this convention: remove the check; do not add `@SuppressFBWarnings`.
+- Never write tests that violate a declared nullness contract (passing `null` to a `@Nonnull` parameter, stubbing a non-null getter to return null). Such tests pin out-of-contract behavior; raise with Andrew before removing any test.
 
 ## Imports
 
@@ -47,4 +56,4 @@ Examples: `Strings.isNullOrEmpty`, `Preconditions.checkArgument`, `Iterables.get
 
 ## Relationship to java-context
 
-`java-context` covers Netflix-generic Java setup (Gradle/Nebula, Spring Boot Netflix, DGS, gRPC, JUnit/Mockito/AssertJ, test slices, Newt app types). This skill covers Andrew's personal preferences on top. When they conflict, ask Andrew.
+`java-context` covers generic Java project setup (Gradle/Nebula, Spring Boot Netflix, DGS, gRPC, JUnit/Mockito/AssertJ, test slices, Newt app types). This skill covers Andrew's personal rules on top. When they conflict, ask Andrew.
